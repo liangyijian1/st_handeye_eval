@@ -1,0 +1,7 @@
+camera_info.yaml
+*.bmp
+*.jpg
+*.png
+*.txt
+build
+calib_test
