@@ -108,10 +108,10 @@ bool super_edge_detector::detect_edges()
 
                         // 5.ceres optimization
                         double optimized_value = 0.0;
-                        ceres_optimization(gradients, x_values, config, optimized_value);
-
-                        // 6. map edge position back to image
-                        edgePoints.emplace_back(circles[i][0] + optimized_value * direction.x, circles[i][1] + optimized_value * direction.y);
+                        if (ceres_optimization(gradients, x_values, config, optimized_value)){
+                            // 6. map edge position back to image
+                            edgePoints.emplace_back(circles[i][0] + optimized_value * direction.x, circles[i][1] + optimized_value * direction.y);
+                        }
                     }
                     
                     // 7. draw detected edges on the image and save
@@ -200,7 +200,7 @@ bool super_edge_detector::cal_profile_gradient(const std::vector<RadialProfileSa
     for (size_t i = 1; i < profile.size() - 1; i++)
     {
         double grad = (profile[i + 1].intensity - profile[i - 1].intensity) / (profile[i + 1].distance - profile[i - 1].distance);
-        gradients.push_back(grad);
+        gradients.push_back(std::abs(grad));
         x_values.push_back(profile[i].distance);
     }
     return true;
@@ -208,8 +208,12 @@ bool super_edge_detector::cal_profile_gradient(const std::vector<RadialProfileSa
 
 bool super_edge_detector::ceres_optimization(const std::vector<double> &gradients, const std::vector<double> &x_values, const detector_config &config, double &optimized_value)
 {
-    double a = 127.5;
-    double mu = x_values.size() / 2.0;
+    auto max_it = std::max_element(gradients.begin(), gradients.end());
+    auto max_idx = std::distance(gradients.begin(), max_it);
+    if (*max_it < 5.0) return false;
+
+    double a = *max_it;
+    double mu = x_values[max_idx];
     double sigma1 = 2.0;
     double sigma2 = 2.0;
 
@@ -223,6 +227,9 @@ bool super_edge_detector::ceres_optimization(const std::vector<double> &gradient
     
     problem.SetParameterLowerBound(&sigma1, 0, 0.01);
     problem.SetParameterLowerBound(&sigma2, 0, 0.01);
+    problem.SetParameterLowerBound(&a, 0, 0.01); // Amplitude is always positive
+    problem.SetParameterLowerBound(&mu, 0, x_values.front());
+    problem.SetParameterUpperBound(&mu, 0, x_values.back());
 
     ceres::Solver::Options options;
     options.linear_solver_type = ceres::DENSE_QR;
@@ -232,12 +239,11 @@ bool super_edge_detector::ceres_optimization(const std::vector<double> &gradient
     ceres::Solver::Summary summary;
     ceres::Solve(options, &problem, &summary);
 
-    if (summary.IsSolutionUsable()) {
+    if (summary.IsSolutionUsable() && mu > x_values.front() + 0.1 && mu < x_values.back() - 0.1) {
         optimized_value = mu;
-        //std::cout << "Optimization successful. Optimized value: " << optimized_value << std::endl;
+        return true;
     }
-    
-    return true;
+    return false;
 }
 
 void super_edge_detector::draw_subpixel_edges(cv::Mat& image, const std::vector<cv::Point2d>& edge_points, bool draw_lines, int shift)
@@ -246,32 +252,26 @@ void super_edge_detector::draw_subpixel_edges(cv::Mat& image, const std::vector<
         return;
     }
 
-    // 计算放大倍数
     const double multiplier = static_cast<double>(1 << shift);
     std::vector<cv::Point> scaled_points;
     scaled_points.reserve(edge_points.size());
 
-    // 计算放大后的绘制半径
     int radius = static_cast<int>(std::round(1.5 * multiplier));
 
     for (const auto& pt : edge_points)
     {
-        // 转换为包含 shift 放大的整型坐标
         cv::Point scaled_pt(
             static_cast<int>(std::round(pt.x * multiplier)),
             static_cast<int>(std::round(pt.y * multiplier))
         );
         scaled_points.push_back(scaled_pt);
 
-        // 绘制单个亚像素点 (红色)
         cv::circle(image, scaled_pt, radius, cv::Scalar(0, 0, 255), -1, cv::LINE_AA, shift);
     }
 
-    // 绘制连线 (绿色多边形)
     if (draw_lines && scaled_points.size() >= 2)
     {
         std::vector<std::vector<cv::Point>> pts = { scaled_points };
-        // true 表示闭合多边形
         cv::polylines(image, pts, true, cv::Scalar(0, 255, 0), 1, cv::LINE_AA, shift);
     }
 }
