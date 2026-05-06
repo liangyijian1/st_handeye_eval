@@ -71,6 +71,17 @@ inline double cubicWeight(double x) {
     return 0.0;
 }
 
+inline double cubicWeight_1(double x) {
+    x = std::abs(x);
+    if (x <= 1.0) {
+        return (3.0 * x * x * x - 6.0 * x * x + 4.0) / 6.0;
+    } else if (x <= 2.0) {
+        double temp = 2.0 - x;
+        return (temp * temp * temp) / 6.0;
+    }
+    return 0.0;
+}
+
 bool bicubicSample(const cv::Mat& gray64, const cv::Point2d& point, double& value)
 {
     if (point.x < 0.0 || point.y < 0.0 ||
@@ -85,17 +96,17 @@ bool bicubicSample(const cv::Mat& gray64, const cv::Point2d& point, double& valu
     const double dy = point.y - static_cast<double>(y0);
 
     double weights_x[4] = {
-        cubicWeight(1.0 + dx),
-        cubicWeight(dx),
-        cubicWeight(1.0 - dx),
-        cubicWeight(2.0 - dx)
+        cubicWeight_1(1.0 + dx),
+        cubicWeight_1(dx),
+        cubicWeight_1(1.0 - dx),
+        cubicWeight_1(2.0 - dx)
     };
 
     double weights_y[4] = {
-        cubicWeight(1.0 + dy),
-        cubicWeight(dy),
-        cubicWeight(1.0 - dy),
-        cubicWeight(2.0 - dy)
+        cubicWeight_1(1.0 + dy),
+        cubicWeight_1(dy),
+        cubicWeight_1(1.0 - dy),
+        cubicWeight_1(2.0 - dy)
     };
 
     double result = 0.0;
@@ -207,7 +218,7 @@ bool super_edge_detector::detect_edges()
                 summary_file << "file: " << path.filename().string() << "\n";
                 summary_file << "blob circle count: " << circles.size() << "\n\n";
                 int fine_detected_circles_count = 0;
-                for (size_t i = 0; i < circles.size(); i++)
+                for (int i = 0; i < circles.size(); i++)
                 {
                     std::vector<cv::Point2d> edgePoints;
                     double original_radius = static_cast<double>(circles[i][2]);
@@ -216,7 +227,7 @@ bool super_edge_detector::detect_edges()
                     std::vector<int> rayIndices; // successful points ray indices
                     std::vector<std::vector<cv::Point2d>> samplePoints2D;
                     
-                    for (size_t j = 0; j < config.num_directions; j++)
+                    for (int j = 0; j < config.num_directions; j++)
                     {
                         double angle = 2.0 * CV_PI * static_cast<double>(j) / static_cast<double>(config.num_directions);
                         const cv::Point2d direction(std::cos(angle), std::sin(angle));
