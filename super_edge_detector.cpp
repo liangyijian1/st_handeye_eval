@@ -60,6 +60,65 @@ bool bilinearSample(const cv::Mat& gray64, const cv::Point2d& point, double& val
     return std::isfinite(value);
 }
 
+inline double cubicWeight(double x) {
+    const double a = -0.75;  // opencv default cubic interpolation parameter
+    x = std::abs(x);
+    if (x <= 1.0) {
+        return (a + 2.0) * x * x * x - (a + 3.0) * x * x + 1.0;
+    } else if (x <= 2.0) {
+        return a * x * x * x - 5.0 * a * x * x + 8.0 * a * x - 4.0 * a;
+    }
+    return 0.0;
+}
+
+bool bicubicSample(const cv::Mat& gray64, const cv::Point2d& point, double& value)
+{
+    if (point.x < 0.0 || point.y < 0.0 ||
+        point.x > static_cast<double>(gray64.cols - 1) ||
+        point.y > static_cast<double>(gray64.rows - 1)) {
+        return false;
+    }
+
+    const int x0 = static_cast<int>(std::floor(point.x));
+    const int y0 = static_cast<int>(std::floor(point.y));
+    const double dx = point.x - static_cast<double>(x0);
+    const double dy = point.y - static_cast<double>(y0);
+
+    double weights_x[4] = {
+        cubicWeight(1.0 + dx),
+        cubicWeight(dx),
+        cubicWeight(1.0 - dx),
+        cubicWeight(2.0 - dx)
+    };
+
+    double weights_y[4] = {
+        cubicWeight(1.0 + dy),
+        cubicWeight(dy),
+        cubicWeight(1.0 - dy),
+        cubicWeight(2.0 - dy)
+    };
+
+    double result = 0.0;
+
+    for (int j = -1; j <= 2; ++j) {
+        int py = std::max(0, std::min(y0 + j, gray64.rows - 1));
+        double row_val = 0.0;
+        
+        for (int i = -1; i <= 2; ++i) {
+            int px = std::max(0, std::min(x0 + i, gray64.cols - 1));
+            row_val += gray64.at<double>(py, px) * weights_x[i + 1];
+        }
+        result += row_val * weights_y[j + 1];
+    }
+
+    if (std::isfinite(result)) {
+        value = result;
+        return true;
+    }
+    
+    return false;
+}
+
 bool plot_profile(
     const std::vector<double>& x_values, 
     const std::vector<double>& gradients, 
@@ -306,7 +365,7 @@ bool super_edge_detector::radial_profile(const cv::Mat &image, const cv::Vec3f &
     for (double distance = startDistance; distance <= endDistance + 1e-9; distance += config.radial_step) {
         const cv::Point2d samplePoint = circleCenter + unitDirection * distance;
         double intensity = 0.0;
-        if (bilinearSample(gray64, samplePoint, intensity)) {
+        if (bicubicSample(gray64, samplePoint, intensity)) {
             profile.push_back({ distance, intensity });
         }
     }
@@ -372,7 +431,7 @@ bool super_edge_detector::ceres_optimization(
     result.sigma1 = sigma1;
     result.sigma2 = sigma2;
 
-    if (summary.final_cost > 400.0 || (sigma1 + sigma2) > 2.0)
+    if (summary.final_cost > 3000.0 || (sigma1 + sigma2) > 2.0)
     {
         return false;
     }
