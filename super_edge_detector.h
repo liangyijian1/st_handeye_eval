@@ -18,8 +18,8 @@ struct RadialProfileSample
 struct detector_config
 {
     int num_directions = 16; // number of radial directions to sample
-    double radial_margin = 7; // margin around the detected circle radius to sample
-    double radial_step = 0.2; // step size for sampling along the radial direction
+    double radial_margin = 10; // margin around the detected circle radius to sample
+    double radial_step = 0.4; // step size for sampling along the radial direction
 };
 
 struct AsymmetricGaussianFunctor
@@ -47,6 +47,13 @@ private:
     const double y_;
 };
 
+struct AsymmetricGaussianResult
+{
+    double a = 0.0;
+    double mu = 0.0;
+    double sigma1 = 0.0;
+    double sigma2 = 0.0;
+};
 
 class super_edge_detector
 {
@@ -64,12 +71,25 @@ private:
 
     bool cal_profile_gradient(const std::vector<RadialProfileSample>& profile, const detector_config& config, std::vector<double>& gradients, std::vector<double>& x_values);
 
-    bool ceres_optimization(const std::vector<double>& gradients, const std::vector<double>& x_values, const detector_config& config, double& optimized_value);
+    bool ceres_optimization(
+        const std::vector<double>& gradients, 
+        const std::vector<double>& x_values, 
+        const detector_config& config, 
+        AsymmetricGaussianResult& result,
+        ceres::Solver::Summary& summary);
 
     void draw_subpixel_edges(cv::Mat& image, 
                              const std::vector<cv::Point2d>& edge_points, 
+                             const std::vector<int>& ray_indices = {},
                              bool draw_circles = true, 
                              int shift = 8);
+
+    void plot_fitting_curve(const std::vector<double>& x_values, 
+                            const std::vector<double>& gradients, 
+                            double a, double mu, double sigma1, double sigma2, 
+                            const ceres::Solver::Summary& summary,
+                            const std::string& save_path,
+                            int ray_index);
 
     std::string root_path_;
     detector_config config;

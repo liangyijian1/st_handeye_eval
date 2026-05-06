@@ -98,6 +98,8 @@ bool super_edge_detector::detect_edges()
                 cv::Mat profileImage;
                 fs::path img_crop_dir = crop_dir / img_name;
                 fs::create_directories(img_crop_dir);
+                fs::path img_plot_dir = crop_dir / img_name / "plots";
+                fs::create_directories(img_plot_dir);
 
                 if (!makeGray64F(image, profileImage)) {
                     std::cerr << "Failed to build radial profile image: " << path << std::endl;
@@ -113,6 +115,7 @@ bool super_edge_detector::detect_edges()
                     double original_radius = static_cast<double>(circles[i][2]);
                     double total_optimization_shift = 0.0;
                     int valid_points = 0;
+                    std::vector<int> rayIndices; // successful points ray indices
 
                     for (size_t j = 0; j < config.num_directions; j++)
                     {
@@ -129,13 +132,17 @@ bool super_edge_detector::detect_edges()
                         cal_profile_gradient(profile, config, gradients, x_values);
 
                         // 5.ceres optimization
-                        double optimized_value = 0.0;
-                        if (ceres_optimization(gradients, x_values, config, optimized_value)){
+                        std::string plot_path = (img_plot_dir / ("circle_" + std::to_string(i) + "_ray_" + std::to_string(j) + "_curve.jpg")).string();
+                        AsymmetricGaussianResult result;
+                        ceres::Solver::Summary summary;
+                        if (ceres_optimization(gradients, x_values, config, result, summary)){
                             // 6. map edge position back to image
-                            edgePoints.emplace_back(circles[i][0] + optimized_value * direction.x, circles[i][1] + optimized_value * direction.y);
-                            total_optimization_shift += std::abs(optimized_value - original_radius);
+                            edgePoints.emplace_back(circles[i][0] + result.mu * direction.x, circles[i][1] + result.mu * direction.y);
+                            total_optimization_shift += std::abs(result.mu - original_radius);
                             valid_points++;
+                            rayIndices.push_back(j);
                         }
+                        plot_fitting_curve(x_values, gradients, result.a, result.mu, result.sigma1, result.sigma2, summary, plot_path, j);
                     }
                     if (valid_points > 0)
                     {
@@ -165,15 +172,14 @@ bool super_edge_detector::detect_edges()
                             for (const auto& ep : edgePoints) {
                                 local_edges.emplace_back((ep.x - roi.x) * scale, (ep.y - roi.y) * scale);
                             }
-
-                            draw_subpixel_edges(high_res_crop, local_edges, true, 8);
+                            // 7. draw detected edges on the image and save
+                            draw_subpixel_edges(high_res_crop, local_edges, rayIndices, true, 8);
                             
                             std::string crop_save_path = (img_crop_dir / ("circle_" + std::to_string(i) + ".jpg")).string();
                             cv::imwrite(crop_save_path, high_res_crop);
                         }
                     }
-                    // 7. draw detected edges on the image and save
-                    draw_subpixel_edges(displayImage, edgePoints, true, 8);
+                    
                 }
                 summary_file << "========================\n";
                 summary_file << "Fine localization successful circle count: " << fine_detected_circles_count << "\n";
@@ -268,7 +274,13 @@ bool super_edge_detector::cal_profile_gradient(const std::vector<RadialProfileSa
     return true;
 }
 
-bool super_edge_detector::ceres_optimization(const std::vector<double> &gradients, const std::vector<double> &x_values, const detector_config &config, double &optimized_value)
+bool super_edge_detector::ceres_optimization(
+    const std::vector<double> &gradients, 
+    const std::vector<double> &x_values, 
+    const detector_config &config, 
+    AsymmetricGaussianResult& result,
+    ceres::Solver::Summary& summary
+)
 {
     auto max_it = std::max_element(gradients.begin(), gradients.end());
     auto max_idx = std::distance(gradients.begin(), max_it);
@@ -289,7 +301,7 @@ bool super_edge_detector::ceres_optimization(const std::vector<double> &gradient
     
     problem.SetParameterLowerBound(&sigma1, 0, 0.01);
     problem.SetParameterLowerBound(&sigma2, 0, 0.01);
-    problem.SetParameterLowerBound(&a, 0, 0.01); // Amplitude is always positive
+    //problem.SetParameterLowerBound(&a, 0, 0.01); // Amplitude is always positive
     problem.SetParameterLowerBound(&mu, 0, x_values.front());
     problem.SetParameterUpperBound(&mu, 0, x_values.back());
 
@@ -298,17 +310,30 @@ bool super_edge_detector::ceres_optimization(const std::vector<double> &gradient
     options.minimizer_progress_to_stdout = false;
     options.max_num_iterations = 100;
 
-    ceres::Solver::Summary summary;
     ceres::Solve(options, &problem, &summary);
 
-    if (summary.IsSolutionUsable() && mu > x_values.front() + 0.1 && mu < x_values.back() - 0.1) {
-        optimized_value = mu;
-        return true;
+    result.a = a;
+    result.mu = mu;
+    result.sigma1 = sigma1;
+    result.sigma2 = sigma2;
+
+    if (summary.final_cost > 400.0 || (sigma1 + sigma2) > 2.0)
+    {
+        return false;
     }
-    return false;
+    
+    if (!summary.IsSolutionUsable() || mu < x_values.front() + 0.1 || mu > x_values.back() - 0.1) {
+        return false;
+    }
+
+    return true;
 }
 
-void super_edge_detector::draw_subpixel_edges(cv::Mat& image, const std::vector<cv::Point2d>& edge_points, bool draw_circles, int shift)
+void super_edge_detector::draw_subpixel_edges(
+    cv::Mat& image, 
+    const std::vector<cv::Point2d>& edge_points, 
+    const std::vector<int>& ray_indices, 
+    bool draw_circles, int shift)
 {
     if (edge_points.empty() || image.empty()) {
         return;
@@ -320,8 +345,9 @@ void super_edge_detector::draw_subpixel_edges(cv::Mat& image, const std::vector<
 
     int radius = static_cast<int>(std::round(1.5 * multiplier));
 
-    for (const auto& pt : edge_points)
+    for (size_t i = 0; i < edge_points.size(); ++i)
     {
+        const auto& pt = edge_points[i];
         cv::Point scaled_pt(
             static_cast<int>(std::round(pt.x * multiplier)),
             static_cast<int>(std::round(pt.y * multiplier))
@@ -329,6 +355,13 @@ void super_edge_detector::draw_subpixel_edges(cv::Mat& image, const std::vector<
         scaled_points.push_back(scaled_pt);
 
         cv::circle(image, scaled_pt, radius, cv::Scalar(0, 0, 255), -1, cv::LINE_AA, shift);
+
+        if (!ray_indices.empty() && ray_indices.size() == edge_points.size()) {
+            cv::Point text_pt(static_cast<int>(std::round(pt.x)), static_cast<int>(std::round(pt.y)));
+            text_pt.x += 3;
+            text_pt.y += 3; 
+            cv::putText(image, std::to_string(ray_indices[i]), text_pt, cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(255, 0, 0), 1, cv::LINE_AA);
+        }
     }
 
     // fit an ellipse if there are enough points
@@ -340,4 +373,79 @@ void super_edge_detector::draw_subpixel_edges(cv::Mat& image, const std::vector<
         auto angle = ellipse.angle;
         cv::ellipse(image, center, cv::Size(axes.width / 2.0, axes.height / 2.0), angle, 0, 360, cv::Scalar(0, 255, 0), 1, cv::LINE_AA, shift);
     }
+}
+
+
+void super_edge_detector::plot_fitting_curve(
+    const std::vector<double>& x_values, 
+    const std::vector<double>& gradients, 
+    double a, double mu, double sigma1, double sigma2, 
+    const ceres::Solver::Summary& summary,
+    const std::string& save_path,
+    int ray_index
+)
+{
+    if (x_values.empty() || gradients.empty() || save_path.empty()) {
+        return;
+    }
+
+    int width = 800;
+    int height = 600;
+    int margin = 60;
+    cv::Mat plot(height, width, CV_8UC3, cv::Scalar(255, 255, 255));
+
+    double min_x = x_values.front();
+    double max_x = x_values.back();
+    double max_y = *std::max_element(gradients.begin(), gradients.end());
+    max_y = std::max(max_y * 1.2, 0.1);
+
+    // 映射函数：将数据坐标转化为图像像素坐标
+    auto map_x = [&](double x) {
+        return margin + static_cast<int>((x - min_x) / (max_x - min_x) * (width - 2 * margin));
+    };
+    auto map_y = [&](double y) {
+        return height - margin - static_cast<int>((y / max_y) * (height - 2 * margin));
+    };
+
+    cv::line(plot, cv::Point(margin, height - margin), cv::Point(width - margin, height - margin), cv::Scalar(0, 0, 0), 2); // X轴
+    cv::line(plot, cv::Point(margin, height - margin), cv::Point(margin, margin), cv::Scalar(0, 0, 0), 2); // Y轴
+    auto final_cost = summary.final_cost;
+
+    std::string title = "Final Cost: " + std::to_string(final_cost) + ", Sigma1: " + std::to_string(sigma1) + ", Sigma2: " + std::to_string(sigma2);
+    cv::putText(plot, title, cv::Point(margin, margin - 20), cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 0, 0), 1);
+
+    for (size_t i = 0; i < x_values.size(); ++i) {
+        cv::Point pt(map_x(x_values[i]), map_y(gradients[i]));
+        cv::circle(plot, pt, 4, cv::Scalar(255, 0, 0), -1, cv::LINE_AA);
+    }
+
+    int num_pts = 200;
+    cv::Point prev_pt(-1, -1);
+    for (int i = 0; i <= num_pts; ++i) {
+        double x = min_x + i * (max_x - min_x) / num_pts;
+        
+        // Asymmetric Gaussian
+        double sig1 = std::abs(sigma1) + 1e-6;
+        double sig2 = std::abs(sigma2) + 1e-6;
+        double diff = x - mu;
+        double current_sigma = (diff < 0.0) ? sig1 : sig2;
+        double constant_term = 2.0 / std::sqrt(2.0 * CV_PI);
+        double exp_term = std::exp(-(diff * diff) / (2.0 * current_sigma * current_sigma));
+        double y = a * constant_term * (1.0 / (sig1 + sig2)) * exp_term;
+
+        cv::Point pt(map_x(x), map_y(y));
+        if (prev_pt.x != -1) {
+            cv::line(plot, prev_pt, pt, cv::Scalar(0, 0, 255), 2, cv::LINE_AA);
+        }
+        prev_pt = pt;
+    }
+
+    int mu_x = map_x(mu);
+    if (mu_x >= margin && mu_x <= width - margin) {
+        cv::line(plot, cv::Point(mu_x, height - margin), cv::Point(mu_x, margin), cv::Scalar(0, 200, 0), 1, cv::LINE_AA);
+        cv::putText(plot, "Edge(Mu)", cv::Point(mu_x + 5, margin + 20), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 200, 0), 1);
+    }
+
+    // 保存图像
+    cv::imwrite(save_path, plot);
 }
