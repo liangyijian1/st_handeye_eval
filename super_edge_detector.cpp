@@ -60,6 +60,45 @@ bool bilinearSample(const cv::Mat& gray64, const cv::Point2d& point, double& val
     return std::isfinite(value);
 }
 
+bool plot_profile(
+    const std::vector<double>& x_values, 
+    const std::vector<double>& gradients, 
+    const std::string& save_path
+)
+{
+    if (x_values.empty() || gradients.empty() || save_path.empty()) {
+        return false;
+    }
+
+    int width = 800;
+    int height = 600;
+    int margin = 60;
+    cv::Mat plot(height, width, CV_8UC3, cv::Scalar(255, 255, 255));
+
+    double min_x = x_values.front();
+    double max_x = x_values.back();
+    double max_y = *std::max_element(gradients.begin(), gradients.end());
+    max_y = std::max(max_y * 1.2, 0.1);
+
+    auto map_x = [&](double x) {
+        return margin + static_cast<int>((x - min_x) / (max_x - min_x) * (width - 2 * margin));
+    };
+    auto map_y = [&](double y) {
+        return height - margin - static_cast<int>((y / max_y) * (height - 2 * margin));
+    };
+
+    cv::line(plot, cv::Point(margin, height - margin), cv::Point(width - margin, height - margin), cv::Scalar(0, 0, 0), 2); // X轴
+    cv::line(plot, cv::Point(margin, height - margin), cv::Point(margin, margin), cv::Scalar(0, 0, 0), 2); // Y轴
+
+    for (size_t i = 0; i < x_values.size(); ++i) {
+        cv::Point pt(map_x(x_values[i]), map_y(gradients[i]));
+        cv::circle(plot, pt, 4, cv::Scalar(255, 0, 0), -1, cv::LINE_AA);
+    }
+
+    // 保存图像
+    cv::imwrite(save_path, plot);
+    return true;
+}
 
 bool super_edge_detector::detect_edges()
 {
@@ -116,7 +155,8 @@ bool super_edge_detector::detect_edges()
                     double total_optimization_shift = 0.0;
                     int valid_points = 0;
                     std::vector<int> rayIndices; // successful points ray indices
-
+                    std::vector<std::vector<cv::Point2d>> samplePoints2D;
+                    
                     for (size_t j = 0; j < config.num_directions; j++)
                     {
                         double angle = 2.0 * CV_PI * static_cast<double>(j) / static_cast<double>(config.num_directions);
@@ -141,6 +181,13 @@ bool super_edge_detector::detect_edges()
                             total_optimization_shift += std::abs(result.mu - original_radius);
                             valid_points++;
                             rayIndices.push_back(j);
+
+                            std::vector<cv::Point2d> current_ray_samples;
+                            for (const auto& s : profile) {
+                                current_ray_samples.emplace_back(circles[i][0] + s.distance * direction.x, circles[i][1] + s.distance * direction.y);
+                            }
+                            samplePoints2D.push_back(current_ray_samples);
+                            
                         }
                         plot_fitting_curve(x_values, gradients, result.a, result.mu, result.sigma1, result.sigma2, summary, plot_path, j);
                     }
@@ -169,17 +216,25 @@ bool super_edge_detector::detect_edges()
                             cv::resize(crop, high_res_crop, cv::Size(), scale, scale, cv::INTER_CUBIC);
 
                             std::vector<cv::Point2d> local_edges;
-                            for (const auto& ep : edgePoints) {
-                                local_edges.emplace_back((ep.x - roi.x) * scale, (ep.y - roi.y) * scale);
+                            std::vector<std::vector<cv::Point2d>> local_sample_points;
+
+                            for (size_t k = 0; k < edgePoints.size(); k++) {
+                                local_edges.emplace_back((edgePoints[k].x - roi.x) * scale, (edgePoints[k].y - roi.y) * scale);
+                                
+                                std::vector<cv::Point2d> mapped_ray;
+                                for (const auto& pt : samplePoints2D[k]) {
+                                    mapped_ray.emplace_back((pt.x - roi.x) * scale, (pt.y - roi.y) * scale);
+                                }
+                                local_sample_points.push_back(mapped_ray);
                             }
                             // 7. draw detected edges on the image and save
-                            draw_subpixel_edges(high_res_crop, local_edges, rayIndices, true, 8);
+                            draw_subpixel_edges(high_res_crop, local_edges, rayIndices, local_sample_points, true, 8);
                             
                             std::string crop_save_path = (img_crop_dir / ("circle_" + std::to_string(i) + ".jpg")).string();
                             cv::imwrite(crop_save_path, high_res_crop);
                         }
                     }
-                    
+                    draw_subpixel_edges(displayImage, edgePoints, rayIndices, samplePoints2D, true, 1);
                 }
                 summary_file << "========================\n";
                 summary_file << "Fine localization successful circle count: " << fine_detected_circles_count << "\n";
@@ -322,7 +377,7 @@ bool super_edge_detector::ceres_optimization(
         return false;
     }
     
-    if (!summary.IsSolutionUsable() || mu < x_values.front() + 0.1 || mu > x_values.back() - 0.1) {
+    if (!summary.IsSolutionUsable()) {
         return false;
     }
 
@@ -333,6 +388,7 @@ void super_edge_detector::draw_subpixel_edges(
     cv::Mat& image, 
     const std::vector<cv::Point2d>& edge_points, 
     const std::vector<int>& ray_indices, 
+    const std::vector<std::vector<cv::Point2d>>& sample_points,
     bool draw_circles, int shift)
 {
     if (edge_points.empty() || image.empty()) {
@@ -344,6 +400,20 @@ void super_edge_detector::draw_subpixel_edges(
     scaled_points.reserve(edge_points.size());
 
     int radius = static_cast<int>(std::round(1.5 * multiplier));
+
+    if (!sample_points.empty() && sample_points.size() == edge_points.size()) {
+        // 采样点画小一点，半径大致是红点的一半以内
+        int sample_radius = std::max(1, static_cast<int>(std::round(0.6 * multiplier))); 
+        for (size_t i = 0; i < sample_points.size(); ++i) {
+            for (const auto& pt : sample_points[i]) {
+                cv::Point scaled_pt(
+                    static_cast<int>(std::round(pt.x * multiplier)),
+                    static_cast<int>(std::round(pt.y * multiplier))
+                );
+                cv::circle(image, scaled_pt, sample_radius, cv::Scalar(0, 255, 255), -1, cv::LINE_AA, shift);
+            }
+        }
+    }
 
     for (size_t i = 0; i < edge_points.size(); ++i)
     {
@@ -449,3 +519,4 @@ void super_edge_detector::plot_fitting_curve(
     // 保存图像
     cv::imwrite(save_path, plot);
 }
+

@@ -18,8 +18,8 @@ struct RadialProfileSample
 struct detector_config
 {
     int num_directions = 16; // number of radial directions to sample
-    double radial_margin = 10; // margin around the detected circle radius to sample
-    double radial_step = 0.4; // step size for sampling along the radial direction
+    double radial_margin = 5; // margin around the detected circle radius to sample
+    double radial_step = 0.1; // step size for sampling along the radial direction
 };
 
 struct AsymmetricGaussianFunctor
@@ -81,6 +81,7 @@ private:
     void draw_subpixel_edges(cv::Mat& image, 
                              const std::vector<cv::Point2d>& edge_points, 
                              const std::vector<int>& ray_indices = {},
+                             const std::vector<std::vector<cv::Point2d>>& sample_points = {},
                              bool draw_circles = true, 
                              int shift = 8);
 
