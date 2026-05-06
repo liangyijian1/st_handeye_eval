@@ -298,9 +298,11 @@ bool super_edge_detector::detect_edges()
                                 local_sample_points.push_back(mapped_ray);
                             }
                             // 7. draw detected edges on the image and save
+                            std::string crop_save_path = (img_crop_dir / ("circle_" + std::to_string(i) + "_ori.jpg")).string();
+                            cv::imwrite(crop_save_path, high_res_crop);
                             draw_subpixel_edges(high_res_crop, local_edges, rayIndices, local_sample_points, true, 8);
                             
-                            std::string crop_save_path = (img_crop_dir / ("circle_" + std::to_string(i) + ".jpg")).string();
+                            crop_save_path = (img_crop_dir / ("circle_" + std::to_string(i) + ".jpg")).string();
                             cv::imwrite(crop_save_path, high_res_crop);
                         }
                     }
@@ -474,7 +476,7 @@ void super_edge_detector::draw_subpixel_edges(
     if (!sample_points.empty() && sample_points.size() == edge_points.size()) {
         // 采样点画小一点，半径大致是红点的一半以内
         int sample_radius = std::max(1, static_cast<int>(std::round(0.6 * multiplier))); 
-        for (size_t i = 0; i < sample_points.size(); ++i) {
+        for (int i = 0; i < sample_points.size(); ++i) {
             for (const auto& pt : sample_points[i]) {
                 cv::Point scaled_pt(
                     static_cast<int>(std::round(pt.x * multiplier)),
@@ -485,7 +487,7 @@ void super_edge_detector::draw_subpixel_edges(
         }
     }
 
-    for (size_t i = 0; i < edge_points.size(); ++i)
+    for (int i = 0; i < edge_points.size(); ++i)
     {
         const auto& pt = edge_points[i];
         cv::Point scaled_pt(
