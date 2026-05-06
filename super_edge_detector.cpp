@@ -375,12 +375,39 @@ bool super_edge_detector::radial_profile(const cv::Mat &image, const cv::Vec3f &
     const double startDistance = std::max(0.0, radius - config.radial_margin);
     const double endDistance = radius + config.radial_margin;
 
-    for (double distance = startDistance; distance <= endDistance + 1e-9; distance += config.radial_step) {
-        const cv::Point2d samplePoint = circleCenter + unitDirection * distance;
-        double intensity = 0.0;
-        if (bicubicSample(gray64, samplePoint, intensity)) {
-            profile.push_back({ distance, intensity });
-        }
+    // 1. 计算当前射线需要采样的总点数
+    int num_samples = static_cast<int>(std::floor((endDistance - startDistance) / config.radial_step)) + 1;
+    if (num_samples <= 0) return false;
+
+    // 2. 预先分配 OpenCV remap 所需的坐标映射表 (要求类型必须是 CV_32FC1)
+    cv::Mat map_x(1, num_samples, CV_32FC1);
+    cv::Mat map_y(1, num_samples, CV_32FC1);
+    
+    float* p_map_x = map_x.ptr<float>(0);
+    float* p_map_y = map_y.ptr<float>(0);
+    std::vector<double> distances(num_samples);
+
+    // 3. 填充映射表坐标
+    for (int i = 0; i < num_samples; ++i) {
+        double distance = startDistance + i * config.radial_step;
+        distances[i] = distance; // 记录 distance 供组装 profile 使用
+        
+        cv::Point2d samplePoint = circleCenter + unitDirection * distance;
+        p_map_x[i] = static_cast<float>(samplePoint.x);
+        p_map_y[i] = static_cast<float>(samplePoint.y);
+    }
+
+    // 4. 调用 OpenCV 底层高度优化的 remap 函数进行批量插值
+    cv::Mat profile_result;
+    // 参数说明：cv::INTER_CUBIC 是双三次插值，cv::BORDER_REPLICATE 用于处理射线采样出界的情况
+    cv::remap(gray64, profile_result, map_x, map_y, cv::INTER_CUBIC, cv::BORDER_REPLICATE);
+
+    // 5. 将 remap 输出的连续内存结果组装回你的 RadialProfileSample 结构体中
+    // 由于原图 gray64 是 CV_64FC1，remap 的输出 profile_result 也会是 CV_64FC1
+    double* p_res = profile_result.ptr<double>(0);
+    profile.reserve(num_samples);
+    for (int i = 0; i < num_samples; ++i) {
+        profile.push_back({ distances[i], p_res[i], 0.0 });
     }
 
     return !profile.empty();
