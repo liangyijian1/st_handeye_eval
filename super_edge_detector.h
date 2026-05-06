@@ -4,6 +4,9 @@
 #include <filesystem>
 #include <ceres/ceres.h>
 #include <cmath>
+#include <fstream>
+
+namespace fs = std::filesystem;
 
 struct RadialProfileSample
 {
@@ -14,9 +17,9 @@ struct RadialProfileSample
 
 struct detector_config
 {
-    int num_directions = 8; // number of radial directions to sample
-    double radial_margin = 5.0; // margin around the detected circle radius to sample
-    double radial_step = 1.0; // step size for sampling along the radial direction
+    int num_directions = 16; // number of radial directions to sample
+    double radial_margin = 7; // margin around the detected circle radius to sample
+    double radial_step = 0.2; // step size for sampling along the radial direction
 };
 
 struct AsymmetricGaussianFunctor
@@ -55,7 +58,7 @@ public:
     bool detect_edges();
 
 private:
-    bool detect_circles(const cv::Mat& image, std::vector<cv::Vec3f>& circles);
+    bool detect_circles(const cv::Mat& image, std::vector<cv::Vec3f>& circles, const std::string& save_path = "");
 
     bool radial_profile(const cv::Mat& image, const cv::Vec3f& center, const cv::Point2d& direction, const detector_config& config, std::vector<RadialProfileSample>& profile);
 
@@ -65,7 +68,7 @@ private:
 
     void draw_subpixel_edges(cv::Mat& image, 
                              const std::vector<cv::Point2d>& edge_points, 
-                             bool draw_lines = true, 
+                             bool draw_circles = true, 
                              int shift = 8);
 
     std::string root_path_;

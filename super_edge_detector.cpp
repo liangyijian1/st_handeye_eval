@@ -64,8 +64,18 @@ bool bilinearSample(const cv::Mat& gray64, const cv::Point2d& point, double& val
 bool super_edge_detector::detect_edges()
 {
     // 1. Load images from root_path_
-    auto root_path = std::filesystem::path(root_path_);
-    for (const auto& entry : std::filesystem::directory_iterator(root_path))
+    auto root_path = fs::path(root_path_);
+    fs::path out_root = root_path / "output";
+    fs::path rough_dir = out_root / "rough_detection";
+    fs::path fine_dir = out_root / "fine_detection";
+    fs::path crop_dir = out_root / "fine_subpixel_crops";
+    fs::path summary_dir = out_root / "summary";
+
+    fs::create_directories(rough_dir);
+    fs::create_directories(fine_dir);
+    fs::create_directories(crop_dir);
+    fs::create_directories(summary_dir);
+    for (const auto& entry : fs::directory_iterator(root_path))
     {
         if (entry.is_regular_file())
         {
@@ -80,18 +90,30 @@ bool super_edge_detector::detect_edges()
                 }
                 // 2. find all circles in the image
                 std::vector<cv::Vec3f> circles;
-                detect_circles(image, circles);
+                std::string img_name = path.stem().string();
+                std::string rough_save_path = (rough_dir / (img_name + "_rough.jpg")).string();
+                detect_circles(image, circles, rough_save_path);
                 std::cout << "Detected " << circles.size() << " circles in image: " << path << std::endl;
                 cv::Mat displayImage = image.clone();
                 cv::Mat profileImage;
+                fs::path img_crop_dir = crop_dir / img_name;
+                fs::create_directories(img_crop_dir);
+
                 if (!makeGray64F(image, profileImage)) {
                     std::cerr << "Failed to build radial profile image: " << path << std::endl;
                     continue;
                 }
-                
+                std::ofstream summary_file((summary_dir / (img_name + "_summary.txt")).string());
+                summary_file << "file: " << path.filename().string() << "\n";
+                summary_file << "blob circle count: " << circles.size() << "\n\n";
+                int fine_detected_circles_count = 0;
                 for (size_t i = 0; i < circles.size(); i++)
                 {
                     std::vector<cv::Point2d> edgePoints;
+                    double original_radius = static_cast<double>(circles[i][2]);
+                    double total_optimization_shift = 0.0;
+                    int valid_points = 0;
+
                     for (size_t j = 0; j < config.num_directions; j++)
                     {
                         double angle = 2.0 * CV_PI * static_cast<double>(j) / static_cast<double>(config.num_directions);
@@ -111,20 +133,60 @@ bool super_edge_detector::detect_edges()
                         if (ceres_optimization(gradients, x_values, config, optimized_value)){
                             // 6. map edge position back to image
                             edgePoints.emplace_back(circles[i][0] + optimized_value * direction.x, circles[i][1] + optimized_value * direction.y);
+                            total_optimization_shift += std::abs(optimized_value - original_radius);
+                            valid_points++;
                         }
                     }
-                    
+                    if (valid_points > 0)
+                    {
+                        fine_detected_circles_count++;
+                        double avg_shift = total_optimization_shift / valid_points;
+                        
+                        summary_file << "The " << i + 1 << " circle (Center X: " << circles[i][0] << ", Y: " << circles[i][1] << ")\n"
+                                     << "   Sub-pixel edge points generated: " << valid_points << "/" << config.num_directions << "\n"
+                                     << "   Average coordinate correction (relative to original coarse radius): " << std::fixed << std::setprecision(4) << avg_shift << " px\n\n";
+
+                        int margin = static_cast<int>(config.radial_margin) + 15;
+                        int cx = cvRound(circles[i][0]);
+                        int cy = cvRound(circles[i][1]);
+                        int r = cvRound(original_radius);
+
+                        cv::Rect roi(cx - r - margin, cy - r - margin, 2 * (r + margin), 2 * (r + margin));
+                        cv::Rect img_rect(0, 0, image.cols, image.rows);
+                        roi = roi & img_rect; // Intersect to prevent boundary overflow
+
+                        if (roi.width > 0 && roi.height > 0) {
+                            cv::Mat crop = image(roi).clone();
+                            double scale = 8.0; // 8× magnification
+                            cv::Mat high_res_crop;
+                            cv::resize(crop, high_res_crop, cv::Size(), scale, scale, cv::INTER_CUBIC);
+
+                            std::vector<cv::Point2d> local_edges;
+                            for (const auto& ep : edgePoints) {
+                                local_edges.emplace_back((ep.x - roi.x) * scale, (ep.y - roi.y) * scale);
+                            }
+
+                            draw_subpixel_edges(high_res_crop, local_edges, true, 8);
+                            
+                            std::string crop_save_path = (img_crop_dir / ("circle_" + std::to_string(i) + ".jpg")).string();
+                            cv::imwrite(crop_save_path, high_res_crop);
+                        }
+                    }
                     // 7. draw detected edges on the image and save
                     draw_subpixel_edges(displayImage, edgePoints, true, 8);
                 }
-                cv::imwrite(path.stem().string() + "_edges.jpg", displayImage);
+                summary_file << "========================\n";
+                summary_file << "Fine localization successful circle count: " << fine_detected_circles_count << "\n";
+                summary_file.close();
+                std::string fine_save_path = (fine_dir / (img_name + "_fine.jpg")).string();
+                cv::imwrite(fine_save_path, displayImage);
             }
         }
     }
-    return false;
+    return true;
 }
 
-bool super_edge_detector::detect_circles(const cv::Mat& image, std::vector<cv::Vec3f>& circles)
+bool super_edge_detector::detect_circles(const cv::Mat& image, std::vector<cv::Vec3f>& circles, const std::string& save_path)
 {
     if (image.empty())
         return false;
@@ -155,7 +217,7 @@ bool super_edge_detector::detect_circles(const cv::Mat& image, std::vector<cv::V
         cv::circle(display, center, radius, cv::Scalar(0, 255, 0), 2);
         cv::circle(display, center, 3, cv::Scalar(0, 0, 255), -1);
     }
-    cv::imwrite("detected_circles.jpg", display);
+    cv::imwrite(save_path, display);
     return true;
 }
 
@@ -246,7 +308,7 @@ bool super_edge_detector::ceres_optimization(const std::vector<double> &gradient
     return false;
 }
 
-void super_edge_detector::draw_subpixel_edges(cv::Mat& image, const std::vector<cv::Point2d>& edge_points, bool draw_lines, int shift)
+void super_edge_detector::draw_subpixel_edges(cv::Mat& image, const std::vector<cv::Point2d>& edge_points, bool draw_circles, int shift)
 {
     if (edge_points.empty() || image.empty()) {
         return;
@@ -269,9 +331,13 @@ void super_edge_detector::draw_subpixel_edges(cv::Mat& image, const std::vector<
         cv::circle(image, scaled_pt, radius, cv::Scalar(0, 0, 255), -1, cv::LINE_AA, shift);
     }
 
-    if (draw_lines && scaled_points.size() >= 2)
+    // fit an ellipse if there are enough points
+    if (draw_circles && edge_points.size() >= 5)
     {
-        std::vector<std::vector<cv::Point>> pts = { scaled_points };
-        cv::polylines(image, pts, true, cv::Scalar(0, 255, 0), 1, cv::LINE_AA, shift);
+        cv::RotatedRect ellipse = cv::fitEllipse(scaled_points);
+        auto center = ellipse.center;
+        auto axes = ellipse.size;
+        auto angle = ellipse.angle;
+        cv::ellipse(image, center, cv::Size(axes.width / 2.0, axes.height / 2.0), angle, 0, 360, cv::Scalar(0, 255, 0), 1, cv::LINE_AA, shift);
     }
 }

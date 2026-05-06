@@ -10,7 +10,6 @@
 int main(int argc, char** argv)
 {
     detector_config config;
-    config.num_directions = 8;
     super_edge_detector edge_detector("C:\\Users\\yjliang\\Downloads\\st_handeye_eval\\st_handeye_eval\\images", config);
     edge_detector.detect_edges();
     return 0;
