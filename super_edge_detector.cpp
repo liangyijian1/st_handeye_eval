@@ -106,7 +106,7 @@ bool super_edge_detector::detect_edges()
             {
                 const auto& dir = directions[j];
 
-                // 3. Radial profile (uses pre-converted gray64)
+                // 3. Radial profile
                 std::vector<RadialProfileSample> profile;
                 radial_profile(gray64, circles[i], dir, profile);
 
@@ -147,7 +147,7 @@ bool super_edge_detector::detect_edges()
 
                 summary_file << "The " << i + 1 << " circle (Center X: " << cx_f << ", Y: " << cy_f << ")\n"
                              << "   Sub-pixel edge points generated: " << valid_points << "/" << nd << "\n"
-                             << "   Average coordinate correction (relative to original coarse radius): " << std::fixed << std::setprecision(4) << avg_shift << " px\n\n";
+                             << "   Average coordinate correction: " << std::fixed << std::setprecision(4) << avg_shift << " px\n\n";
 
                 if (config.save_crops) {
                     int pad = static_cast<int>(config.radial_margin) + 15;
@@ -156,7 +156,7 @@ bool super_edge_detector::detect_edges()
                     roi &= cv::Rect(0, 0, image.cols, image.rows);
 
                     if (roi.width > 0 && roi.height > 0) {
-                        constexpr double scale = 8.0;
+                        constexpr double scale = 4.0;
                         cv::Mat high_res_crop;
                         cv::resize(image(roi), high_res_crop, cv::Size(), scale, scale, cv::INTER_CUBIC);
 
@@ -192,24 +192,58 @@ bool super_edge_detector::detect_edges()
 
 bool super_edge_detector::detect_circles(const cv::Mat& image, std::vector<cv::Vec3f>& circles, const std::string& save_path)
 {
+    circles.clear();
     if (image.empty()) return false;
 
     cv::Mat gray;
     if (image.channels() == 3)
         cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
+    else if (image.channels() == 4)
+        cv::cvtColor(image, gray, cv::COLOR_BGRA2GRAY);
     else if (image.channels() == 1)
         gray = image;
     else
         return false;
 
-    cv::GaussianBlur(gray, gray, cv::Size(9, 9), 2, 2);
-    cv::HoughCircles(gray, circles, cv::HOUGH_GRADIENT_ALT,
-                     1.5,    // dp
-                     30,     // minDist
-                     150,    // param1
-                     0.7,    // param2
-                     2,      // minRadius
-                     15);    // maxRadius
+    if (gray.depth() != CV_8U) {
+        cv::normalize(gray, gray, 0, 255, cv::NORM_MINMAX, CV_8U);
+    }
+
+    if (config.circle_detection_method == CIRCLE_DETECT_EDGE_DRAWING)
+    {
+        cv::Ptr<cv::ximgproc::EdgeDrawing> edge_detector = cv::ximgproc::createEdgeDrawing();
+        edge_detector->params.EdgeDetectionOperator = cv::ximgproc::EdgeDrawing::LSD;
+        edge_detector->params.GradientThresholdValue = 40;
+        edge_detector->params.AnchorThresholdValue = 20;
+        edge_detector->params.MinPathLength = 5;
+        edge_detector->params.PFmode = false;
+        edge_detector->params.NFAValidation = true;
+        edge_detector->detectEdges(gray);
+
+        std::vector<cv::Vec6d> ellipses;
+        edge_detector->detectEllipses(ellipses);
+        for (const auto& ellipse : ellipses) {
+            const double radius = (ellipse[2] > 0.0)
+                                      ? ellipse[2]
+                                      : 0.5 * (std::abs(ellipse[3]) + std::abs(ellipse[4]));
+            if (radius >= 4.0 && radius <= 15.0) {
+                circles.emplace_back(static_cast<float>(ellipse[0]),
+                                     static_cast<float>(ellipse[1]),
+                                     static_cast<float>(radius));
+            }
+        }
+    }
+    else
+    {
+        cv::GaussianBlur(gray, gray, cv::Size(9, 9), 2, 2);
+        cv::HoughCircles(gray, circles, cv::HOUGH_GRADIENT_ALT,
+                         1.5,    // dp
+                         30,     // minDist
+                         180,    // param1
+                         0.9,    // param2
+                         4,      // minRadius
+                         15);    // maxRadius
+    }
 
     if (!save_path.empty()) {
         cv::Mat display = image.clone();
@@ -219,6 +253,7 @@ bool super_edge_detector::detect_circles(const cv::Mat& image, std::vector<cv::V
         }
         cv::imwrite(save_path, display);
     }
+
     return true;
 }
 
@@ -231,8 +266,6 @@ bool super_edge_detector::radial_profile(const cv::Mat& gray64, const cv::Vec3f&
         config.radial_margin <= 0.0 || config.radial_step <= 0.0) {
         return false;
     }
-
-    // gray64 is already pre-converted — no redundant makeGray64F call
 
     const cv::Point2d circleCenter(static_cast<double>(center[0]), static_cast<double>(center[1]));
     const cv::Point2d unitDirection(direction.x / directionNorm, direction.y / directionNorm);
@@ -316,8 +349,8 @@ bool super_edge_detector::ceres_optimization(
     ceres::Solver::Options options;
     options.linear_solver_type = ceres::DENSE_QR;
     options.minimizer_progress_to_stdout = false;
-    options.max_num_iterations = 50;           // Reduced from 100: typically converges in <30
-    options.function_tolerance = 1e-5;         // Early termination when cost barely changes
+    options.max_num_iterations = 50;
+    options.function_tolerance = 1e-5;
     options.gradient_tolerance = 1e-8;
     options.parameter_tolerance = 1e-6;
 
@@ -349,7 +382,6 @@ void super_edge_detector::draw_subpixel_edges(
     int radius = static_cast<int>(std::round(1.5 * multiplier));
 
     if (!sample_points.empty() && sample_points.size() == edge_points.size() && mode == DRAW_ALL) {
-        // 采样点画小一点，半径大致是红点的一半以内
         int sample_radius = std::max(1, static_cast<int>(std::round(0.6 * multiplier))); 
         for (int i = 0; i < sample_points.size(); ++i) {
             for (const auto& pt : sample_points[i]) {
@@ -385,7 +417,7 @@ void super_edge_detector::draw_subpixel_edges(
         
     } 
 
-    // fit an ellipse if there are enough points
+    // fit ellipse
     if (draw_circles && edge_points.size() >= 5)
     {
         cv::RotatedRect ellipse = cv::fitEllipse(scaled_points);
@@ -429,7 +461,6 @@ void super_edge_detector::plot_fitting_curve(
     double max_y = *std::max_element(gradients.begin(), gradients.end());
     max_y = std::max(max_y * 1.2, 0.1);
 
-    // 映射函数：将数据坐标转化为图像像素坐标
     auto map_x = [&](double x) {
         return margin + static_cast<int>((x - min_x) / (max_x - min_x) * (width - 2 * margin));
     };
@@ -476,7 +507,6 @@ void super_edge_detector::plot_fitting_curve(
         cv::putText(plot, "Edge(Mu)", cv::Point(mu_x + 5, margin + 20), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 200, 0), 1);
     }
 
-    // 保存图像
     cv::imwrite(save_path, plot);
 }
 

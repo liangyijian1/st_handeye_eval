@@ -9,7 +9,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # 禁用 CMake 3.24+ 的 SYSTEM 包含目录 /external: 标志（会导致 MSVC 找不到标准库）
 set(CMAKE_NO_SYSTEM_FROM_IMPORTED TRUE)
 
-set(OpenCV_DIR "D:/3rdParty/cv413/opencv/build/x64/vc16/lib" CACHE PATH "OpenCV CMake package directory")
+set(OpenCV_DIR "D:/3rdParty/opencv-4.13.0/build/install/x64/vc18/lib" CACHE PATH "OpenCV CMake package directory" FORCE)
 if(NOT DEFINED Eigen3_DIR OR NOT EXISTS "${Eigen3_DIR}/Eigen3Config.cmake")
     set(Eigen3_DIR "C:/Program Files (x86)/PCL/3rdParty/Eigen/share/eigen3/cmake" CACHE PATH "Eigen3 CMake package directory" FORCE)
 endif()
@@ -40,7 +40,7 @@ foreach(cuda_cache_var IN ITEMS
 endforeach()
 
 find_package(Ceres REQUIRED CONFIG)
-find_package(OpenCV REQUIRED)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs highgui calib3d features2d ximgproc)
 
 add_executable(st_handeye_eval
     main.cpp
@@ -73,9 +73,9 @@ if(MSVC)
     target_link_options(st_handeye_eval PRIVATE $<$<CONFIG:RelWithDebInfo>:/INCREMENTAL:NO>)
 endif()
 
-set(OPENCV_RUNTIME_DIR "D:/3rdParty/cv413/opencv/build/x64/vc16/bin")
+set(OPENCV_RUNTIME_DIR "D:/3rdParty/opencv-4.13.0/build/install/x64/vc18/bin")
 if(EXISTS "${OPENCV_RUNTIME_DIR}")
-    file(GLOB OPENCV_RUNTIME_DLLS "${OPENCV_RUNTIME_DIR}/opencv_world*.dll")
+    file(GLOB OPENCV_RUNTIME_DLLS "${OPENCV_RUNTIME_DIR}/opencv_*.dll")
     if(OPENCV_RUNTIME_DLLS)
         add_custom_command(TARGET st_handeye_eval POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different

@@ -1,14 +1,13 @@
 #pragma once
 
-// 先包含标准库头文件以避免 MSVC 编译器问题
 #include <cmath>
 #include <string>
 #include <filesystem>
 #include <fstream>
 #include <vector>
 
-// 然后包含第三方库
 #include <opencv2/opencv.hpp>
+#include <opencv2/ximgproc/edge_drawing.hpp>
 #include <ceres/ceres.h>
 
 namespace fs = std::filesystem;
@@ -20,13 +19,20 @@ struct RadialProfileSample
     double gradient;  // gradient magnitude at the sample point
 };
 
+enum CircleDetectionMethod
+{
+    CIRCLE_DETECT_HOUGH = 0,
+    CIRCLE_DETECT_EDGE_DRAWING = 1
+};
+
 struct detector_config
 {
     int num_directions = 20; // number of radial directions to sample
     double radial_margin = 7; // margin around the detected circle radius to sample
     double radial_step = 0.2; // step size for sampling along the radial direction
-    bool save_plots = false;  // whether to save per-ray fitting curve plots (slow I/O)
-    bool save_crops = false;  // whether to save per-circle crop images
+    bool save_plots = false;
+    bool save_crops = false;
+    int circle_detection_method = CIRCLE_DETECT_EDGE_DRAWING;
 };
 
 struct AsymmetricGaussianFunctor
