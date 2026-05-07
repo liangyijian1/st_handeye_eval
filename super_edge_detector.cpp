@@ -281,7 +281,7 @@ bool super_edge_detector::detect_edges()
 
                         if (roi.width > 0 && roi.height > 0) {
                             cv::Mat crop = image(roi).clone();
-                            double scale = 8.0; // 8× magnification
+                            double scale = 8.0;
                             cv::Mat high_res_crop;
                             cv::resize(crop, high_res_crop, cv::Size(), scale, scale, cv::INTER_CUBIC);
 
@@ -306,7 +306,7 @@ bool super_edge_detector::detect_edges()
                             cv::imwrite(crop_save_path, high_res_crop);
                         }
                     }
-                    draw_subpixel_edges(displayImage, edgePoints, rayIndices, samplePoints2D, true, 1);
+                    draw_subpixel_edges(displayImage, edgePoints, rayIndices, samplePoints2D, true, 1, DrawMode::DRAW_PROFILE);
                 }
                 summary_file << "========================\n";
                 summary_file << "Fine localization successful circle count: " << fine_detected_circles_count << "\n";
@@ -332,11 +332,11 @@ bool super_edge_detector::detect_circles(const cv::Mat& image, std::vector<cv::V
 
     cv::GaussianBlur(gray, gray, cv::Size(9, 9), 2, 2);
     std::vector<cv::Vec3f> detected;
-    cv::HoughCircles(gray, detected, cv::HOUGH_GRADIENT,
-                     1,                // dp
-                     gray.rows / 16,   // minDist
+    cv::HoughCircles(gray, detected, cv::HOUGH_GRADIENT_ALT,
+                     1.5,                // dp
+                     30,   // minDist
                      150,              // param1
-                     30,               // param2
+                     0.7,               // param2
                      2,               // minRadius
                      15);               // maxRadius
 
@@ -375,11 +375,10 @@ bool super_edge_detector::radial_profile(const cv::Mat &image, const cv::Vec3f &
     const double startDistance = std::max(0.0, radius - config.radial_margin);
     const double endDistance = radius + config.radial_margin;
 
-    // 1. 计算当前射线需要采样的总点数
+
     int num_samples = static_cast<int>(std::floor((endDistance - startDistance) / config.radial_step)) + 1;
     if (num_samples <= 0) return false;
 
-    // 2. 预先分配 OpenCV remap 所需的坐标映射表 (要求类型必须是 CV_32FC1)
     cv::Mat map_x(1, num_samples, CV_32FC1);
     cv::Mat map_y(1, num_samples, CV_32FC1);
     
@@ -387,23 +386,18 @@ bool super_edge_detector::radial_profile(const cv::Mat &image, const cv::Vec3f &
     float* p_map_y = map_y.ptr<float>(0);
     std::vector<double> distances(num_samples);
 
-    // 3. 填充映射表坐标
     for (int i = 0; i < num_samples; ++i) {
         double distance = startDistance + i * config.radial_step;
-        distances[i] = distance; // 记录 distance 供组装 profile 使用
+        distances[i] = distance;
         
         cv::Point2d samplePoint = circleCenter + unitDirection * distance;
         p_map_x[i] = static_cast<float>(samplePoint.x);
         p_map_y[i] = static_cast<float>(samplePoint.y);
     }
 
-    // 4. 调用 OpenCV 底层高度优化的 remap 函数进行批量插值
     cv::Mat profile_result;
-    // 参数说明：cv::INTER_CUBIC 是双三次插值，cv::BORDER_REPLICATE 用于处理射线采样出界的情况
     cv::remap(gray64, profile_result, map_x, map_y, cv::INTER_CUBIC, cv::BORDER_REPLICATE);
 
-    // 5. 将 remap 输出的连续内存结果组装回你的 RadialProfileSample 结构体中
-    // 由于原图 gray64 是 CV_64FC1，remap 的输出 profile_result 也会是 CV_64FC1
     double* p_res = profile_result.ptr<double>(0);
     profile.reserve(num_samples);
     for (int i = 0; i < num_samples; ++i) {
@@ -488,7 +482,7 @@ void super_edge_detector::draw_subpixel_edges(
     const std::vector<cv::Point2d>& edge_points, 
     const std::vector<int>& ray_indices, 
     const std::vector<std::vector<cv::Point2d>>& sample_points,
-    bool draw_circles, int shift)
+    bool draw_circles, int shift,DrawMode mode)
 {
     if (edge_points.empty() || image.empty()) {
         return;
@@ -500,7 +494,7 @@ void super_edge_detector::draw_subpixel_edges(
 
     int radius = static_cast<int>(std::round(1.5 * multiplier));
 
-    if (!sample_points.empty() && sample_points.size() == edge_points.size()) {
+    if (!sample_points.empty() && sample_points.size() == edge_points.size() && mode == DRAW_ALL) {
         // 采样点画小一点，半径大致是红点的一半以内
         int sample_radius = std::max(1, static_cast<int>(std::round(0.6 * multiplier))); 
         for (int i = 0; i < sample_points.size(); ++i) {
@@ -523,15 +517,19 @@ void super_edge_detector::draw_subpixel_edges(
         );
         scaled_points.push_back(scaled_pt);
 
-        cv::circle(image, scaled_pt, radius, cv::Scalar(0, 0, 255), -1, cv::LINE_AA, shift);
+        if (mode == DrawMode::DRAW_ALL)
+        {
+            cv::circle(image, scaled_pt, radius, cv::Scalar(0, 0, 255), -1, cv::LINE_AA, shift);
 
-        if (!ray_indices.empty() && ray_indices.size() == edge_points.size()) {
-            cv::Point text_pt(static_cast<int>(std::round(pt.x)), static_cast<int>(std::round(pt.y)));
-            text_pt.x += 3;
-            text_pt.y += 3; 
-            cv::putText(image, std::to_string(ray_indices[i]), text_pt, cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(255, 0, 0), 1, cv::LINE_AA);
+            if (!ray_indices.empty() && ray_indices.size() == edge_points.size() && mode != DRAW_NONE) {
+                cv::Point text_pt(static_cast<int>(std::round(pt.x)), static_cast<int>(std::round(pt.y)));
+                text_pt.x += 3;
+                text_pt.y += 3; 
+                cv::putText(image, std::to_string(ray_indices[i]), text_pt, cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(255, 0, 0), 1, cv::LINE_AA);
+            }
         }
-    }
+        
+    } 
 
     // fit an ellipse if there are enough points
     if (draw_circles && edge_points.size() >= 5)
@@ -540,7 +538,16 @@ void super_edge_detector::draw_subpixel_edges(
         auto center = ellipse.center;
         auto axes = ellipse.size;
         auto angle = ellipse.angle;
-        cv::ellipse(image, center, cv::Size(axes.width / 2.0, axes.height / 2.0), angle, 0, 360, cv::Scalar(0, 255, 0), 1, cv::LINE_AA, shift);
+        if (mode == DrawMode::DRAW_CENTERS) {
+            // 只画中心点
+            cv::circle(image, center, radius, cv::Scalar(255, 0, 0), -1, cv::LINE_AA, shift);
+        } 
+        else if (mode == DrawMode::DRAW_PROFILE)
+        {
+            cv::circle(image, center, radius, cv::Scalar(0, 0, 255), -1, cv::LINE_AA, shift);
+            cv::ellipse(image, center, cv::Size(axes.width / 2.0, axes.height / 2.0), angle, 0, 360, cv::Scalar(0, 255, 0), 1, cv::LINE_AA, shift);
+        }
+        
     }
 }
 

@@ -1,5 +1,6 @@
 #pragma once
 #include <opencv2/opencv.hpp>
+//#include <opencv2/ximgproc/edge_drawing.hpp>
 #include <string>
 #include <filesystem>
 #include <ceres/ceres.h>
@@ -17,9 +18,9 @@ struct RadialProfileSample
 
 struct detector_config
 {
-    int num_directions = 16; // number of radial directions to sample
-    double radial_margin = 5; // margin around the detected circle radius to sample
-    double radial_step = 0.1; // step size for sampling along the radial direction
+    int num_directions = 20; // number of radial directions to sample
+    double radial_margin = 7; // margin around the detected circle radius to sample
+    double radial_step = 0.2; // step size for sampling along the radial direction
 };
 
 struct AsymmetricGaussianFunctor
@@ -55,6 +56,14 @@ struct AsymmetricGaussianResult
     double sigma2 = 0.0;
 };
 
+enum DrawMode
+{
+    DRAW_NONE = 0,
+    DRAW_CENTERS = 1,
+    DRAW_PROFILE = 2,
+    DRAW_ALL = 3
+};
+
 class super_edge_detector
 {
 public:
@@ -83,7 +92,8 @@ private:
                              const std::vector<int>& ray_indices = {},
                              const std::vector<std::vector<cv::Point2d>>& sample_points = {},
                              bool draw_circles = true, 
-                             int shift = 8);
+                             int shift = 8,
+                             DrawMode mode = DRAW_ALL);
 
     void plot_fitting_curve(const std::vector<double>& x_values, 
                             const std::vector<double>& gradients, 
