@@ -38,7 +38,7 @@ bool super_edge_detector::detect_edges()
     fs::create_directories(crop_dir);
     fs::create_directories(summary_dir);
 
-    // Pre-compute direction vectors (avoid repeated trig calls per circle)
+    // Pre-compute direction vectors
     const int nd = config.num_directions;
     std::vector<cv::Point2d> directions(nd);
     for (int j = 0; j < nd; ++j) {
@@ -85,7 +85,7 @@ bool super_edge_detector::detect_edges()
         cv::Mat displayImage = image.clone();
         std::ofstream summary_file((summary_dir / (img_name + "_summary.txt")).string());
         summary_file << "file: " << path.filename().string() << "\n";
-        summary_file << "blob circle count: " << circles.size() << "\n\n";
+        summary_file << "detect circle count: " << circles.size() << "\n\n";
         int fine_detected_circles_count = 0;
 
         for (int i = 0; i < static_cast<int>(circles.size()); ++i)
@@ -101,6 +101,9 @@ bool super_edge_detector::detect_edges()
             edgePoints.reserve(nd);
             rayIndices.reserve(nd);
             samplePoints2D.reserve(nd);
+
+            std::vector<AsymmetricGaussianResult> allResults(nd);
+            std::vector<ceres::Solver::Summary> allSummaries(nd);
 
             for (int j = 0; j < nd; ++j)
             {
@@ -133,21 +136,76 @@ bool super_edge_detector::detect_edges()
                         samplePoints2D.push_back(std::move(ray_samples));
                     }
                 }
-
+                allResults[j] = result;
+                allSummaries[j] = summary;
                 if (config.save_plots) {
                     std::string plot_path = (img_plot_dir / ("circle_" + std::to_string(i) + "_ray_" + std::to_string(j) + "_curve.jpg")).string();
                     plot_fitting_curve(x_values, gradients, result.a, result.mu, result.sigma1, result.sigma2, summary, plot_path, j);
                 }
             }
 
-            if (valid_points > 0)
+            if (valid_points > 5)
             {
                 fine_detected_circles_count++;
                 double avg_shift = total_optimization_shift / valid_points;
 
+                // output confidence
+                double confidence = 0.0;
+                double S_cover = static_cast<double>(valid_points) / nd;
+
+                std::vector<double> sigma_sums;
+                for (int j : rayIndices)
+                    sigma_sums.push_back(std::abs(allResults[j].sigma1) + std::abs(allResults[j].sigma2));
+                std::sort(sigma_sums.begin(), sigma_sums.end());
+                double sigma_med = sigma_sums[sigma_sums.size()/2] / 2.0;
+                double S_sharpness = std::exp(-sigma_med / 2.0);
+
+                std::vector<double> costs;
+                for (int j : rayIndices)
+                    costs.push_back(allSummaries[j].final_cost);
+                std::sort(costs.begin(), costs.end());
+                double cost_med = costs[costs.size()/2];
+                double S_cost = std::exp(-cost_med / 800.0);
+
+                double S_circularity = 1.0;
+                std::vector<cv::Point2f> pts;
+                pts.reserve(edgePoints.size());
+                for (const auto& p : edgePoints)
+                    pts.push_back(cv::Point2f(static_cast<float>(p.x), static_cast<float>(p.y)));
+                cv::RotatedRect ellipse = cv::fitEllipse(pts);
+                float a = ellipse.size.width / 2.0f;
+                float b = ellipse.size.height / 2.0f;
+                if (a > 0 && b > 0)
+                    S_circularity = std::min(a, b) / std::max(a, b);
+
+                const int K = 16;
+                std::vector<int> sector_hit(K, 0);
+                for (int j : rayIndices) {
+                    double angle = 2.0 * CV_PI * j / nd;
+                    int sector = static_cast<int>(angle / (2.0 * CV_PI) * K) % K;
+                    sector_hit[sector] = 1;
+                }
+                int occupied = std::accumulate(sector_hit.begin(), sector_hit.end(), 0);
+                double S_angular = static_cast<double>(occupied) / K;
+
+                confidence = config.summary_weights.coverage_weight * S_cover + 
+                             config.summary_weights.sharpness_weight * S_sharpness + 
+                             config.summary_weights.cost_weight * S_cost + 
+                             config.summary_weights.circularity_weight * S_circularity + 
+                             config.summary_weights.angular_distribution_weight * S_angular;
+                
+
                 summary_file << "The " << i + 1 << " circle (Center X: " << cx_f << ", Y: " << cy_f << ")\n"
                              << "   Sub-pixel edge points generated: " << valid_points << "/" << nd << "\n"
-                             << "   Average coordinate correction: " << std::fixed << std::setprecision(4) << avg_shift << " px\n\n";
+                             << "   Average coordinate correction: " << std::fixed << std::setprecision(4) << avg_shift << " px\n"
+                             << "   Confidence details after weighting:\n"
+                             << "    - Coverage: " << std::fixed << std::setprecision(4) << config.summary_weights.coverage_weight * S_cover << "\n"
+                             << "    - Sharpness: " << std::fixed << std::setprecision(4) << config.summary_weights.sharpness_weight * S_sharpness << "\n"
+                             << "    - Cost: " << std::fixed << std::setprecision(4) << config.summary_weights.cost_weight * S_cost << "\n"
+                             << "    - Circularity: " << std::fixed << std::setprecision(4) << config.summary_weights.circularity_weight * S_circularity << "\n"
+                             << "    - Angular distribution: " << std::fixed << std::setprecision(4) << config.summary_weights.angular_distribution_weight * S_angular << "\n"
+                             << "    - Overall confidence: " << std::fixed << std::setprecision(4) << confidence << "\n\n";
+
 
                 if (config.save_crops) {
                     int pad = static_cast<int>(config.radial_margin) + 15;
@@ -174,15 +232,15 @@ bool super_edge_detector::detect_edges()
                         }
 
                         cv::imwrite((img_crop_dir / ("circle_" + std::to_string(i) + "_ori.jpg")).string(), high_res_crop);
-                        draw_subpixel_edges(high_res_crop, local_edges, rayIndices, local_samples, true, 8);
+                        draw_subpixel_edges(high_res_crop, local_edges, rayIndices, local_samples, 8);
                         cv::imwrite((img_crop_dir / ("circle_" + std::to_string(i) + ".jpg")).string(), high_res_crop);
                     }
                 }
+
+                draw_subpixel_edges(displayImage, edgePoints, rayIndices, samplePoints2D, 1, DrawMode::DRAW_PROFILES | DrawMode::DRAW_CENTERS);
             }
-            draw_subpixel_edges(displayImage, edgePoints, rayIndices, samplePoints2D, true, 1, DrawMode::DRAW_PROFILE);
         }
 
-        summary_file << "========================\n";
         summary_file << "Fine localization successful circle count: " << fine_detected_circles_count << "\n";
         summary_file.close();
         cv::imwrite((fine_dir / (img_name + "_fine.jpg")).string(), displayImage);
@@ -320,8 +378,7 @@ bool super_edge_detector::ceres_optimization(
     const std::vector<double>& gradients,
     const std::vector<double>& x_values,
     AsymmetricGaussianResult& result,
-    ceres::Solver::Summary& summary
-)
+    ceres::Solver::Summary& summary)
 {
     auto max_it = std::max_element(gradients.begin(), gradients.end());
     if (*max_it < 5.0) return false;
@@ -358,7 +415,7 @@ bool super_edge_detector::ceres_optimization(
 
     result = { a, mu, sigma1, sigma2 };
 
-    if (summary.final_cost > 3000.0 || (sigma1 + sigma2) > 2.0)
+    if (summary.final_cost > config.ceres_cost_th || (sigma1 + sigma2) > config.ceres_sigma_th)
         return false;
 
     return summary.IsSolutionUsable();
@@ -369,7 +426,7 @@ void super_edge_detector::draw_subpixel_edges(
     const std::vector<cv::Point2d>& edge_points, 
     const std::vector<int>& ray_indices, 
     const std::vector<std::vector<cv::Point2d>>& sample_points,
-    bool draw_circles, int shift,DrawMode mode)
+    int shift, DrawMode mode)
 {
     if (edge_points.empty() || image.empty()) {
         return;
@@ -381,7 +438,8 @@ void super_edge_detector::draw_subpixel_edges(
 
     int radius = static_cast<int>(std::round(1.5 * multiplier));
 
-    if (!sample_points.empty() && sample_points.size() == edge_points.size() && mode == DRAW_ALL) {
+    // draw sample 
+    if (!sample_points.empty() && sample_points.size() == edge_points.size() && (mode & DrawMode::DRAW_SAMPLES) != DrawMode::DRAW_NONE) {
         int sample_radius = std::max(1, static_cast<int>(std::round(0.6 * multiplier))); 
         for (int i = 0; i < sample_points.size(); ++i) {
             for (const auto& pt : sample_points[i]) {
@@ -403,34 +461,28 @@ void super_edge_detector::draw_subpixel_edges(
         );
         scaled_points.push_back(scaled_pt);
 
-        if (mode == DrawMode::DRAW_ALL)
-        {
+        if (!ray_indices.empty() && ray_indices.size() == edge_points.size() && (mode & DrawMode::DRAW_EDGES) != DrawMode::DRAW_NONE) {
             cv::circle(image, scaled_pt, radius, cv::Scalar(0, 0, 255), -1, cv::LINE_AA, shift);
-
-            if (!ray_indices.empty() && ray_indices.size() == edge_points.size() && mode != DRAW_NONE) {
-                cv::Point text_pt(static_cast<int>(std::round(pt.x)), static_cast<int>(std::round(pt.y)));
-                text_pt.x += 3;
-                text_pt.y += 3; 
-                cv::putText(image, std::to_string(ray_indices[i]), text_pt, cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(255, 0, 0), 1, cv::LINE_AA);
-            }
+            cv::Point text_pt(static_cast<int>(std::round(pt.x)), static_cast<int>(std::round(pt.y)));
+            text_pt.x += 3;
+            text_pt.y += 3; 
+            cv::putText(image, std::to_string(ray_indices[i]), text_pt, cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(255, 0, 0), 1, cv::LINE_AA);
         }
         
     } 
 
     // fit ellipse
-    if (draw_circles && edge_points.size() >= 5)
+    if (edge_points.size() >= 5)
     {
         cv::RotatedRect ellipse = cv::fitEllipse(scaled_points);
         auto center = ellipse.center;
         auto axes = ellipse.size;
         auto angle = ellipse.angle;
-        if (mode == DrawMode::DRAW_CENTERS) {
-            // 只画中心点
+        if ((mode & DrawMode::DRAW_CENTERS) != DrawMode::DRAW_NONE) {
             cv::circle(image, center, radius, cv::Scalar(255, 0, 0), -1, cv::LINE_AA, shift);
         } 
-        else if (mode == DrawMode::DRAW_PROFILE)
+        if ((mode & DrawMode::DRAW_PROFILES) != DrawMode::DRAW_NONE)
         {
-            cv::circle(image, center, radius, cv::Scalar(0, 0, 255), -1, cv::LINE_AA, shift);
             cv::ellipse(image, center, cv::Size(axes.width / 2.0, axes.height / 2.0), angle, 0, 360, cv::Scalar(0, 255, 0), 1, cv::LINE_AA, shift);
         }
         

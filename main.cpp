@@ -15,6 +15,9 @@ int main(int argc, char** argv)
     config.save_plots = 1;
     config.save_crops = 1;
 
+    config.ceres_cost_th = 700.0;
+
+
     super_edge_detector edge_detector("C:\\Users\\yjliang\\Downloads\\st_handeye_eval\\st_handeye_eval\\images", config);
     edge_detector.detect_edges();
 

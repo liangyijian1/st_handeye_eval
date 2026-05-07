@@ -25,14 +25,31 @@ enum CircleDetectionMethod
     CIRCLE_DETECT_EDGE_DRAWING = 1
 };
 
+struct SummaryWeights
+{
+    double coverage_weight = 0.15;
+    double sharpness_weight = 0.25;
+    double cost_weight = 0.15;
+    double circularity_weight = 0.25;
+    double angular_distribution_weight = 0.2;
+};
+
 struct detector_config
 {
+    // edge detection parameters
     int num_directions = 20; // number of radial directions to sample
     double radial_margin = 7; // margin around the detected circle radius to sample
     double radial_step = 0.2; // step size for sampling along the radial direction
+    // debug parameters
     bool save_plots = false;
     bool save_crops = false;
+    SummaryWeights summary_weights;
+    // circle detection parameters
     int circle_detection_method = CIRCLE_DETECT_EDGE_DRAWING;
+    // ceres optimization parameters
+    float ceres_cost_th = 3000.0;
+    float ceres_sigma_th = 2.0;
+    
 };
 
 struct AsymmetricGaussianFunctor
@@ -68,13 +85,25 @@ struct AsymmetricGaussianResult
     double sigma2 = 0.0;
 };
 
-enum DrawMode
+enum DrawMode : unsigned
 {
     DRAW_NONE = 0,
-    DRAW_CENTERS = 1,
-    DRAW_PROFILE = 2,
-    DRAW_ALL = 3
+    DRAW_CENTERS = 1 << 0,
+    DRAW_SAMPLES = 1 << 1,
+    DRAW_PROFILES = 1 << 2,
+    DRAW_EDGES = 1 << 3,
+    DRAW_ALL = DRAW_CENTERS | DRAW_SAMPLES | DRAW_PROFILES | DRAW_EDGES
 };
+
+constexpr DrawMode operator|(DrawMode a, DrawMode b)
+{
+    return static_cast<DrawMode>(static_cast<unsigned>(a) | static_cast<unsigned>(b));
+}
+
+constexpr DrawMode operator&(DrawMode a, DrawMode b)
+{
+    return static_cast<DrawMode>(static_cast<unsigned>(a) & static_cast<unsigned>(b));
+}
 
 class super_edge_detector
 {
@@ -102,7 +131,6 @@ private:
                              const std::vector<cv::Point2d>& edge_points, 
                              const std::vector<int>& ray_indices = {},
                              const std::vector<std::vector<cv::Point2d>>& sample_points = {},
-                             bool draw_circles = true, 
                              int shift = 8,
                              DrawMode mode = DRAW_ALL);
 
