@@ -1,11 +1,15 @@
 #pragma once
-#include <opencv2/opencv.hpp>
-//#include <opencv2/ximgproc/edge_drawing.hpp>
+
+// 先包含标准库头文件以避免 MSVC 编译器问题
+#include <cmath>
 #include <string>
 #include <filesystem>
-#include <ceres/ceres.h>
-#include <cmath>
 #include <fstream>
+#include <vector>
+
+// 然后包含第三方库
+#include <opencv2/opencv.hpp>
+#include <ceres/ceres.h>
 
 namespace fs = std::filesystem;
 
@@ -21,6 +25,8 @@ struct detector_config
     int num_directions = 20; // number of radial directions to sample
     double radial_margin = 7; // margin around the detected circle radius to sample
     double radial_step = 0.2; // step size for sampling along the radial direction
+    bool save_plots = false;  // whether to save per-ray fitting curve plots (slow I/O)
+    bool save_crops = false;  // whether to save per-circle crop images
 };
 
 struct AsymmetricGaussianFunctor
@@ -76,14 +82,13 @@ public:
 private:
     bool detect_circles(const cv::Mat& image, std::vector<cv::Vec3f>& circles, const std::string& save_path = "");
 
-    bool radial_profile(const cv::Mat& image, const cv::Vec3f& center, const cv::Point2d& direction, const detector_config& config, std::vector<RadialProfileSample>& profile);
+    bool radial_profile(const cv::Mat& gray64, const cv::Vec3f& center, const cv::Point2d& direction, std::vector<RadialProfileSample>& profile);
 
-    bool cal_profile_gradient(const std::vector<RadialProfileSample>& profile, const detector_config& config, std::vector<double>& gradients, std::vector<double>& x_values);
+    bool cal_profile_gradient(const std::vector<RadialProfileSample>& profile, std::vector<double>& gradients, std::vector<double>& x_values);
 
     bool ceres_optimization(
-        const std::vector<double>& gradients, 
-        const std::vector<double>& x_values, 
-        const detector_config& config, 
+        const std::vector<double>& gradients,
+        const std::vector<double>& x_values,
         AsymmetricGaussianResult& result,
         ceres::Solver::Summary& summary);
 

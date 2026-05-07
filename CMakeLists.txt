@@ -6,6 +6,9 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# 禁用 CMake 3.24+ 的 SYSTEM 包含目录 /external: 标志（会导致 MSVC 找不到标准库）
+set(CMAKE_NO_SYSTEM_FROM_IMPORTED TRUE)
+
 set(OpenCV_DIR "D:/3rdParty/cv413/opencv/build/x64/vc16/lib" CACHE PATH "OpenCV CMake package directory")
 if(NOT DEFINED Eigen3_DIR OR NOT EXISTS "${Eigen3_DIR}/Eigen3Config.cmake")
     set(Eigen3_DIR "C:/Program Files (x86)/PCL/3rdParty/Eigen/share/eigen3/cmake" CACHE PATH "Eigen3 CMake package directory" FORCE)

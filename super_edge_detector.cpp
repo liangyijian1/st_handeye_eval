@@ -5,383 +5,245 @@
 #include <iostream>
 
 
-bool makeGray64F(const cv::Mat& image, cv::Mat& gray64)
+static bool makeGray64F(const cv::Mat& image, cv::Mat& gray64)
 {
-    if (image.empty()) {
-        return false;
-    }
+    if (image.empty()) return false;
 
     cv::Mat gray;
-    if (image.channels() == 1) {
-        if (image.depth() == CV_64F) {
-            gray64 = image;
-            return true;
-        }
-        gray = image;
-    }
-    else if (image.channels() == 3) {
-        cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
-    }
-    else if (image.channels() == 4) {
-        cv::cvtColor(image, gray, cv::COLOR_BGRA2GRAY);
-    }
-    else {
-        return false;
+    switch (image.channels()) {
+        case 1: gray = image; break;
+        case 3: cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY); break;
+        case 4: cv::cvtColor(image, gray, cv::COLOR_BGRA2GRAY); break;
+        default: return false;
     }
 
-    gray.convertTo(gray64, CV_64F);
-    return true;
-}
-
-bool bilinearSample(const cv::Mat& gray64, const cv::Point2d& point, double& value)
-{
-    if (point.x < 0.0 || point.y < 0.0 ||
-        point.x > static_cast<double>(gray64.cols - 1) ||
-        point.y > static_cast<double>(gray64.rows - 1)) {
-        return false;
-    }
-
-    const int x0 = static_cast<int>(std::floor(point.x));
-    const int y0 = static_cast<int>(std::floor(point.y));
-    const int x1 = std::min(x0 + 1, gray64.cols - 1);
-    const int y1 = std::min(y0 + 1, gray64.rows - 1);
-    const double dx = point.x - static_cast<double>(x0);
-    const double dy = point.y - static_cast<double>(y0);
-
-    const double v00 = gray64.at<double>(y0, x0);
-    const double v10 = gray64.at<double>(y0, x1);
-    const double v01 = gray64.at<double>(y1, x0);
-    const double v11 = gray64.at<double>(y1, x1);
-
-    value = (1.0 - dx) * (1.0 - dy) * v00 +
-        dx * (1.0 - dy) * v10 +
-        (1.0 - dx) * dy * v01 +
-        dx * dy * v11;
-    return std::isfinite(value);
-}
-
-inline double cubicWeight(double x) {
-    const double a = -0.75;  // opencv default cubic interpolation parameter
-    x = std::abs(x);
-    if (x <= 1.0) {
-        return (a + 2.0) * x * x * x - (a + 3.0) * x * x + 1.0;
-    } else if (x <= 2.0) {
-        return a * x * x * x - 5.0 * a * x * x + 8.0 * a * x - 4.0 * a;
-    }
-    return 0.0;
-}
-
-inline double cubicWeight_1(double x) {
-    x = std::abs(x);
-    if (x <= 1.0) {
-        return (3.0 * x * x * x - 6.0 * x * x + 4.0) / 6.0;
-    } else if (x <= 2.0) {
-        double temp = 2.0 - x;
-        return (temp * temp * temp) / 6.0;
-    }
-    return 0.0;
-}
-
-bool bicubicSample(const cv::Mat& gray64, const cv::Point2d& point, double& value)
-{
-    if (point.x < 0.0 || point.y < 0.0 ||
-        point.x > static_cast<double>(gray64.cols - 1) ||
-        point.y > static_cast<double>(gray64.rows - 1)) {
-        return false;
-    }
-
-    const int x0 = static_cast<int>(std::floor(point.x));
-    const int y0 = static_cast<int>(std::floor(point.y));
-    const double dx = point.x - static_cast<double>(x0);
-    const double dy = point.y - static_cast<double>(y0);
-
-    double weights_x[4] = {
-        cubicWeight_1(1.0 + dx),
-        cubicWeight_1(dx),
-        cubicWeight_1(1.0 - dx),
-        cubicWeight_1(2.0 - dx)
-    };
-
-    double weights_y[4] = {
-        cubicWeight_1(1.0 + dy),
-        cubicWeight_1(dy),
-        cubicWeight_1(1.0 - dy),
-        cubicWeight_1(2.0 - dy)
-    };
-
-    double result = 0.0;
-
-    for (int j = -1; j <= 2; ++j) {
-        int py = std::max(0, std::min(y0 + j, gray64.rows - 1));
-        double row_val = 0.0;
-        
-        for (int i = -1; i <= 2; ++i) {
-            int px = std::max(0, std::min(x0 + i, gray64.cols - 1));
-            row_val += gray64.at<double>(py, px) * weights_x[i + 1];
-        }
-        result += row_val * weights_y[j + 1];
-    }
-
-    if (std::isfinite(result)) {
-        value = result;
-        return true;
-    }
-    
-    return false;
-}
-
-bool plot_profile(
-    const std::vector<double>& x_values, 
-    const std::vector<double>& gradients, 
-    const std::string& save_path
-)
-{
-    if (x_values.empty() || gradients.empty() || save_path.empty()) {
-        return false;
-    }
-
-    int width = 800;
-    int height = 600;
-    int margin = 60;
-    cv::Mat plot(height, width, CV_8UC3, cv::Scalar(255, 255, 255));
-
-    double min_x = x_values.front();
-    double max_x = x_values.back();
-    double max_y = *std::max_element(gradients.begin(), gradients.end());
-    max_y = std::max(max_y * 1.2, 0.1);
-
-    auto map_x = [&](double x) {
-        return margin + static_cast<int>((x - min_x) / (max_x - min_x) * (width - 2 * margin));
-    };
-    auto map_y = [&](double y) {
-        return height - margin - static_cast<int>((y / max_y) * (height - 2 * margin));
-    };
-
-    cv::line(plot, cv::Point(margin, height - margin), cv::Point(width - margin, height - margin), cv::Scalar(0, 0, 0), 2); // X轴
-    cv::line(plot, cv::Point(margin, height - margin), cv::Point(margin, margin), cv::Scalar(0, 0, 0), 2); // Y轴
-
-    for (size_t i = 0; i < x_values.size(); ++i) {
-        cv::Point pt(map_x(x_values[i]), map_y(gradients[i]));
-        cv::circle(plot, pt, 4, cv::Scalar(255, 0, 0), -1, cv::LINE_AA);
-    }
-
-    // 保存图像
-    cv::imwrite(save_path, plot);
+    if (gray.depth() == CV_64F)
+        gray64 = gray;
+    else
+        gray.convertTo(gray64, CV_64F);
     return true;
 }
 
 bool super_edge_detector::detect_edges()
 {
-    // 1. Load images from root_path_
-    auto root_path = fs::path(root_path_);
-    fs::path out_root = root_path / "output";
-    fs::path rough_dir = out_root / "rough_detection";
-    fs::path fine_dir = out_root / "fine_detection";
-    fs::path crop_dir = out_root / "fine_subpixel_crops";
-    fs::path summary_dir = out_root / "summary";
+    const auto root_path = fs::path(root_path_);
+    const fs::path out_root = root_path / "output";
+    const fs::path rough_dir = out_root / "rough_detection";
+    const fs::path fine_dir = out_root / "fine_detection";
+    const fs::path crop_dir = out_root / "fine_subpixel_crops";
+    const fs::path summary_dir = out_root / "summary";
 
     fs::create_directories(rough_dir);
     fs::create_directories(fine_dir);
     fs::create_directories(crop_dir);
     fs::create_directories(summary_dir);
+
+    // Pre-compute direction vectors (avoid repeated trig calls per circle)
+    const int nd = config.num_directions;
+    std::vector<cv::Point2d> directions(nd);
+    for (int j = 0; j < nd; ++j) {
+        double angle = 2.0 * CV_PI * j / nd;
+        directions[j] = { std::cos(angle), std::sin(angle) };
+    }
+
     for (const auto& entry : fs::directory_iterator(root_path))
     {
-        if (entry.is_regular_file())
-        {
-            const auto& path = entry.path();
-            if (path.extension() == ".bmp")
-            {
-                cv::Mat image = cv::imread(path.string());
-                if (image.empty())
-                {
-                    std::cerr << "Failed to load image: " << path << std::endl;
-                    continue;
-                }
-                // 2. find all circles in the image
-                std::vector<cv::Vec3f> circles;
-                std::string img_name = path.stem().string();
-                std::string rough_save_path = (rough_dir / (img_name + "_rough.jpg")).string();
-                detect_circles(image, circles, rough_save_path);
-                std::cout << "Detected " << circles.size() << " circles in image: " << path << std::endl;
-                cv::Mat displayImage = image.clone();
-                cv::Mat profileImage;
-                fs::path img_crop_dir = crop_dir / img_name;
-                fs::create_directories(img_crop_dir);
-                fs::path img_plot_dir = crop_dir / img_name / "plots";
+        if (!entry.is_regular_file() || entry.path().extension() != ".bmp")
+            continue;
+
+        const auto& path = entry.path();
+        cv::Mat image = cv::imread(path.string());
+        if (image.empty()) {
+            std::cerr << "Failed to load image: " << path << std::endl;
+            continue;
+        }
+
+        // 1. Rough circle detection
+        std::vector<cv::Vec3f> circles;
+        std::string img_name = path.stem().string();
+        detect_circles(image, circles, (rough_dir / (img_name + "_rough.jpg")).string());
+        std::cout << "Detected " << circles.size() << " circles in image: " << path << std::endl;
+
+        // 2. Convert to gray64 once for the whole image (avoid per-ray conversion)
+        cv::Mat gray64;
+        if (!makeGray64F(image, gray64)) {
+            std::cerr << "Failed to build radial profile image: " << path << std::endl;
+            continue;
+        }
+
+        // Setup output directories (only if saving crops/plots)
+        fs::path img_crop_dir, img_plot_dir;
+        if (config.save_crops || config.save_plots) {
+            img_crop_dir = crop_dir / img_name;
+            fs::create_directories(img_crop_dir);
+            if (config.save_plots) {
+                img_plot_dir = img_crop_dir / "plots";
                 fs::create_directories(img_plot_dir);
-
-                if (!makeGray64F(image, profileImage)) {
-                    std::cerr << "Failed to build radial profile image: " << path << std::endl;
-                    continue;
-                }
-                std::ofstream summary_file((summary_dir / (img_name + "_summary.txt")).string());
-                summary_file << "file: " << path.filename().string() << "\n";
-                summary_file << "blob circle count: " << circles.size() << "\n\n";
-                int fine_detected_circles_count = 0;
-                for (int i = 0; i < circles.size(); i++)
-                {
-                    std::vector<cv::Point2d> edgePoints;
-                    double original_radius = static_cast<double>(circles[i][2]);
-                    double total_optimization_shift = 0.0;
-                    int valid_points = 0;
-                    std::vector<int> rayIndices; // successful points ray indices
-                    std::vector<std::vector<cv::Point2d>> samplePoints2D;
-                    
-                    for (int j = 0; j < config.num_directions; j++)
-                    {
-                        double angle = 2.0 * CV_PI * static_cast<double>(j) / static_cast<double>(config.num_directions);
-                        const cv::Point2d direction(std::cos(angle), std::sin(angle));
-
-                        std::vector<RadialProfileSample> profile;
-                        // 3. radial profile
-                        radial_profile(profileImage, circles[i], direction, config, profile);
-                        
-                        // 4. profile gradient
-                        std::vector<double> gradients;
-                        std::vector<double> x_values;
-                        cal_profile_gradient(profile, config, gradients, x_values);
-
-                        // 5.ceres optimization
-                        std::string plot_path = (img_plot_dir / ("circle_" + std::to_string(i) + "_ray_" + std::to_string(j) + "_curve.jpg")).string();
-                        AsymmetricGaussianResult result;
-                        ceres::Solver::Summary summary;
-                        if (ceres_optimization(gradients, x_values, config, result, summary)){
-                            // 6. map edge position back to image
-                            edgePoints.emplace_back(circles[i][0] + result.mu * direction.x, circles[i][1] + result.mu * direction.y);
-                            total_optimization_shift += std::abs(result.mu - original_radius);
-                            valid_points++;
-                            rayIndices.push_back(j);
-
-                            std::vector<cv::Point2d> current_ray_samples;
-                            for (const auto& s : profile) {
-                                current_ray_samples.emplace_back(circles[i][0] + s.distance * direction.x, circles[i][1] + s.distance * direction.y);
-                            }
-                            samplePoints2D.push_back(current_ray_samples);
-                            
-                        }
-                        plot_fitting_curve(x_values, gradients, result.a, result.mu, result.sigma1, result.sigma2, summary, plot_path, j);
-                    }
-                    if (valid_points > 0)
-                    {
-                        fine_detected_circles_count++;
-                        double avg_shift = total_optimization_shift / valid_points;
-                        
-                        summary_file << "The " << i + 1 << " circle (Center X: " << circles[i][0] << ", Y: " << circles[i][1] << ")\n"
-                                     << "   Sub-pixel edge points generated: " << valid_points << "/" << config.num_directions << "\n"
-                                     << "   Average coordinate correction (relative to original coarse radius): " << std::fixed << std::setprecision(4) << avg_shift << " px\n\n";
-
-                        int margin = static_cast<int>(config.radial_margin) + 15;
-                        int cx = cvRound(circles[i][0]);
-                        int cy = cvRound(circles[i][1]);
-                        int r = cvRound(original_radius);
-
-                        cv::Rect roi(cx - r - margin, cy - r - margin, 2 * (r + margin), 2 * (r + margin));
-                        cv::Rect img_rect(0, 0, image.cols, image.rows);
-                        roi = roi & img_rect; // Intersect to prevent boundary overflow
-
-                        if (roi.width > 0 && roi.height > 0) {
-                            cv::Mat crop = image(roi).clone();
-                            double scale = 8.0;
-                            cv::Mat high_res_crop;
-                            cv::resize(crop, high_res_crop, cv::Size(), scale, scale, cv::INTER_CUBIC);
-
-                            std::vector<cv::Point2d> local_edges;
-                            std::vector<std::vector<cv::Point2d>> local_sample_points;
-
-                            for (size_t k = 0; k < edgePoints.size(); k++) {
-                                local_edges.emplace_back((edgePoints[k].x - roi.x) * scale, (edgePoints[k].y - roi.y) * scale);
-                                
-                                std::vector<cv::Point2d> mapped_ray;
-                                for (const auto& pt : samplePoints2D[k]) {
-                                    mapped_ray.emplace_back((pt.x - roi.x) * scale, (pt.y - roi.y) * scale);
-                                }
-                                local_sample_points.push_back(mapped_ray);
-                            }
-                            // 7. draw detected edges on the image and save
-                            std::string crop_save_path = (img_crop_dir / ("circle_" + std::to_string(i) + "_ori.jpg")).string();
-                            cv::imwrite(crop_save_path, high_res_crop);
-                            draw_subpixel_edges(high_res_crop, local_edges, rayIndices, local_sample_points, true, 8);
-                            
-                            crop_save_path = (img_crop_dir / ("circle_" + std::to_string(i) + ".jpg")).string();
-                            cv::imwrite(crop_save_path, high_res_crop);
-                        }
-                    }
-                    draw_subpixel_edges(displayImage, edgePoints, rayIndices, samplePoints2D, true, 1, DrawMode::DRAW_PROFILE);
-                }
-                summary_file << "========================\n";
-                summary_file << "Fine localization successful circle count: " << fine_detected_circles_count << "\n";
-                summary_file.close();
-                std::string fine_save_path = (fine_dir / (img_name + "_fine.jpg")).string();
-                cv::imwrite(fine_save_path, displayImage);
             }
         }
+
+        cv::Mat displayImage = image.clone();
+        std::ofstream summary_file((summary_dir / (img_name + "_summary.txt")).string());
+        summary_file << "file: " << path.filename().string() << "\n";
+        summary_file << "blob circle count: " << circles.size() << "\n\n";
+        int fine_detected_circles_count = 0;
+
+        for (int i = 0; i < static_cast<int>(circles.size()); ++i)
+        {
+            const double cx_f = circles[i][0], cy_f = circles[i][1];
+            const double original_radius = static_cast<double>(circles[i][2]);
+            double total_optimization_shift = 0.0;
+            int valid_points = 0;
+
+            std::vector<cv::Point2d> edgePoints;
+            std::vector<int> rayIndices;
+            std::vector<std::vector<cv::Point2d>> samplePoints2D;
+            edgePoints.reserve(nd);
+            rayIndices.reserve(nd);
+            samplePoints2D.reserve(nd);
+
+            for (int j = 0; j < nd; ++j)
+            {
+                const auto& dir = directions[j];
+
+                // 3. Radial profile (uses pre-converted gray64)
+                std::vector<RadialProfileSample> profile;
+                radial_profile(gray64, circles[i], dir, profile);
+
+                // 4. Profile gradient
+                std::vector<double> gradients, x_values;
+                gradients.reserve(profile.size());
+                x_values.reserve(profile.size());
+                cal_profile_gradient(profile, gradients, x_values);
+
+                // 5. Ceres optimization
+                AsymmetricGaussianResult result;
+                ceres::Solver::Summary summary;
+                if (ceres_optimization(gradients, x_values, result, summary)) {
+                    edgePoints.emplace_back(cx_f + result.mu * dir.x, cy_f + result.mu * dir.y);
+                    total_optimization_shift += std::abs(result.mu - original_radius);
+                    valid_points++;
+                    rayIndices.push_back(j);
+
+                    if (config.save_crops) {
+                        std::vector<cv::Point2d> ray_samples;
+                        ray_samples.reserve(profile.size());
+                        for (const auto& s : profile)
+                            ray_samples.emplace_back(cx_f + s.distance * dir.x, cy_f + s.distance * dir.y);
+                        samplePoints2D.push_back(std::move(ray_samples));
+                    }
+                }
+
+                if (config.save_plots) {
+                    std::string plot_path = (img_plot_dir / ("circle_" + std::to_string(i) + "_ray_" + std::to_string(j) + "_curve.jpg")).string();
+                    plot_fitting_curve(x_values, gradients, result.a, result.mu, result.sigma1, result.sigma2, summary, plot_path, j);
+                }
+            }
+
+            if (valid_points > 0)
+            {
+                fine_detected_circles_count++;
+                double avg_shift = total_optimization_shift / valid_points;
+
+                summary_file << "The " << i + 1 << " circle (Center X: " << cx_f << ", Y: " << cy_f << ")\n"
+                             << "   Sub-pixel edge points generated: " << valid_points << "/" << nd << "\n"
+                             << "   Average coordinate correction (relative to original coarse radius): " << std::fixed << std::setprecision(4) << avg_shift << " px\n\n";
+
+                if (config.save_crops) {
+                    int pad = static_cast<int>(config.radial_margin) + 15;
+                    int cx = cvRound(cx_f), cy = cvRound(cy_f), r = cvRound(original_radius);
+                    cv::Rect roi(cx - r - pad, cy - r - pad, 2 * (r + pad), 2 * (r + pad));
+                    roi &= cv::Rect(0, 0, image.cols, image.rows);
+
+                    if (roi.width > 0 && roi.height > 0) {
+                        constexpr double scale = 8.0;
+                        cv::Mat high_res_crop;
+                        cv::resize(image(roi), high_res_crop, cv::Size(), scale, scale, cv::INTER_CUBIC);
+
+                        std::vector<cv::Point2d> local_edges;
+                        std::vector<std::vector<cv::Point2d>> local_samples;
+                        local_edges.reserve(edgePoints.size());
+                        local_samples.reserve(edgePoints.size());
+                        for (size_t k = 0; k < edgePoints.size(); ++k) {
+                            local_edges.emplace_back((edgePoints[k].x - roi.x) * scale, (edgePoints[k].y - roi.y) * scale);
+                            std::vector<cv::Point2d> mapped;
+                            mapped.reserve(samplePoints2D[k].size());
+                            for (const auto& pt : samplePoints2D[k])
+                                mapped.emplace_back((pt.x - roi.x) * scale, (pt.y - roi.y) * scale);
+                            local_samples.push_back(std::move(mapped));
+                        }
+
+                        cv::imwrite((img_crop_dir / ("circle_" + std::to_string(i) + "_ori.jpg")).string(), high_res_crop);
+                        draw_subpixel_edges(high_res_crop, local_edges, rayIndices, local_samples, true, 8);
+                        cv::imwrite((img_crop_dir / ("circle_" + std::to_string(i) + ".jpg")).string(), high_res_crop);
+                    }
+                }
+            }
+            draw_subpixel_edges(displayImage, edgePoints, rayIndices, samplePoints2D, true, 1, DrawMode::DRAW_PROFILE);
+        }
+
+        summary_file << "========================\n";
+        summary_file << "Fine localization successful circle count: " << fine_detected_circles_count << "\n";
+        summary_file.close();
+        cv::imwrite((fine_dir / (img_name + "_fine.jpg")).string(), displayImage);
     }
     return true;
 }
 
 bool super_edge_detector::detect_circles(const cv::Mat& image, std::vector<cv::Vec3f>& circles, const std::string& save_path)
 {
-    if (image.empty())
-        return false;
-    cv::Mat display = image.clone();
+    if (image.empty()) return false;
+
     cv::Mat gray;
     if (image.channels() == 3)
         cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
+    else if (image.channels() == 1)
+        gray = image;
     else
-        gray = image.clone();
+        return false;
 
     cv::GaussianBlur(gray, gray, cv::Size(9, 9), 2, 2);
-    std::vector<cv::Vec3f> detected;
-    cv::HoughCircles(gray, detected, cv::HOUGH_GRADIENT_ALT,
-                     1.5,                // dp
-                     30,   // minDist
-                     150,              // param1
-                     0.7,               // param2
-                     2,               // minRadius
-                     15);               // maxRadius
+    cv::HoughCircles(gray, circles, cv::HOUGH_GRADIENT_ALT,
+                     1.5,    // dp
+                     30,     // minDist
+                     150,    // param1
+                     0.7,    // param2
+                     2,      // minRadius
+                     15);    // maxRadius
 
-    circles = detected;
-
-    for (const auto& c : circles)
-    {
-        cv::Point center(cvRound(c[0]), cvRound(c[1]));
-        int radius = cvRound(c[2]);
-        // circle profile
-        cv::circle(display, center, radius, cv::Scalar(0, 255, 0), 2);
-        cv::circle(display, center, 3, cv::Scalar(0, 0, 255), -1);
+    if (!save_path.empty()) {
+        cv::Mat display = image.clone();
+        for (const auto& c : circles) {
+            cv::circle(display, cv::Point(cvRound(c[0]), cvRound(c[1])), cvRound(c[2]), cv::Scalar(0, 255, 0), 2);
+            cv::circle(display, cv::Point(cvRound(c[0]), cvRound(c[1])), 3, cv::Scalar(0, 0, 255), -1);
+        }
+        cv::imwrite(save_path, display);
     }
-    cv::imwrite(save_path, display);
     return true;
 }
 
-bool super_edge_detector::radial_profile(const cv::Mat &image, const cv::Vec3f &center, const cv::Point2d &direction, const detector_config &config, std::vector<RadialProfileSample> &profile)
+bool super_edge_detector::radial_profile(const cv::Mat& gray64, const cv::Vec3f& center, const cv::Point2d& direction, std::vector<RadialProfileSample>& profile)
 {
     const double radius = static_cast<double>(center[2]);
     const double directionNorm = std::sqrt(direction.x * direction.x + direction.y * direction.y);
     if (!std::isfinite(radius) || radius <= 0.0 ||
         !std::isfinite(directionNorm) || directionNorm <= 0.0 ||
-        !std::isfinite(config.radial_margin) || config.radial_margin <= 0.0 ||
-        !std::isfinite(config.radial_step) || config.radial_step <= 0.0) {
+        config.radial_margin <= 0.0 || config.radial_step <= 0.0) {
         return false;
     }
 
-    cv::Mat gray64;
-    if (!makeGray64F(image, gray64)) {
-        return false;
-    }
+    // gray64 is already pre-converted — no redundant makeGray64F call
 
     const cv::Point2d circleCenter(static_cast<double>(center[0]), static_cast<double>(center[1]));
     const cv::Point2d unitDirection(direction.x / directionNorm, direction.y / directionNorm);
     const double startDistance = std::max(0.0, radius - config.radial_margin);
     const double endDistance = radius + config.radial_margin;
 
-
-    int num_samples = static_cast<int>(std::floor((endDistance - startDistance) / config.radial_step)) + 1;
+    const int num_samples = static_cast<int>(std::floor((endDistance - startDistance) / config.radial_step)) + 1;
     if (num_samples <= 0) return false;
 
     cv::Mat map_x(1, num_samples, CV_32FC1);
     cv::Mat map_y(1, num_samples, CV_32FC1);
-    
     float* p_map_x = map_x.ptr<float>(0);
     float* p_map_y = map_y.ptr<float>(0);
     std::vector<double> distances(num_samples);
@@ -389,31 +251,30 @@ bool super_edge_detector::radial_profile(const cv::Mat &image, const cv::Vec3f &
     for (int i = 0; i < num_samples; ++i) {
         double distance = startDistance + i * config.radial_step;
         distances[i] = distance;
-        
-        cv::Point2d samplePoint = circleCenter + unitDirection * distance;
-        p_map_x[i] = static_cast<float>(samplePoint.x);
-        p_map_y[i] = static_cast<float>(samplePoint.y);
+        p_map_x[i] = static_cast<float>(circleCenter.x + unitDirection.x * distance);
+        p_map_y[i] = static_cast<float>(circleCenter.y + unitDirection.y * distance);
     }
 
     cv::Mat profile_result;
     cv::remap(gray64, profile_result, map_x, map_y, cv::INTER_CUBIC, cv::BORDER_REPLICATE);
 
-    double* p_res = profile_result.ptr<double>(0);
-    profile.reserve(num_samples);
+    const double* p_res = profile_result.ptr<double>(0);
+    profile.resize(num_samples);
     for (int i = 0; i < num_samples; ++i) {
-        profile.push_back({ distances[i], p_res[i], 0.0 });
+        profile[i] = { distances[i], p_res[i], 0.0 };
     }
-
-    return !profile.empty();
+    return true;
 }
 
-bool super_edge_detector::cal_profile_gradient(const std::vector<RadialProfileSample> &profile, const detector_config &config, std::vector<double> &gradients, std::vector<double> &x_values)
+bool super_edge_detector::cal_profile_gradient(const std::vector<RadialProfileSample>& profile, std::vector<double>& gradients, std::vector<double>& x_values)
 {
-    if (profile.size() < 3) {
-        return false;
-    }
+    if (profile.size() < 3) return false;
 
-    for (size_t i = 1; i < profile.size() - 1; i++)
+    const size_t n = profile.size() - 2;
+    gradients.reserve(gradients.size() + n);
+    x_values.reserve(x_values.size() + n);
+
+    for (size_t i = 1; i <= n; ++i)
     {
         double grad = (profile[i + 1].intensity - profile[i - 1].intensity) / (profile[i + 1].distance - profile[i - 1].distance);
         gradients.push_back(std::abs(grad));
@@ -423,58 +284,51 @@ bool super_edge_detector::cal_profile_gradient(const std::vector<RadialProfileSa
 }
 
 bool super_edge_detector::ceres_optimization(
-    const std::vector<double> &gradients, 
-    const std::vector<double> &x_values, 
-    const detector_config &config, 
+    const std::vector<double>& gradients,
+    const std::vector<double>& x_values,
     AsymmetricGaussianResult& result,
     ceres::Solver::Summary& summary
 )
 {
     auto max_it = std::max_element(gradients.begin(), gradients.end());
-    auto max_idx = std::distance(gradients.begin(), max_it);
     if (*max_it < 5.0) return false;
 
+    auto max_idx = std::distance(gradients.begin(), max_it);
     double a = *max_it;
     double mu = x_values[max_idx];
     double sigma1 = 2.0;
     double sigma2 = 2.0;
 
     ceres::Problem problem;
-    for (size_t i = 0; i < x_values.size(); i++)
+    for (size_t i = 0; i < x_values.size(); ++i)
     {
-        ceres::CostFunction* cost_function = new ceres::AutoDiffCostFunction<AsymmetricGaussianFunctor, 1, 1, 1, 1, 1>(
-            new AsymmetricGaussianFunctor(x_values[i], gradients[i]));
-        problem.AddResidualBlock(cost_function, nullptr, &a, &mu, &sigma1, &sigma2);
+        problem.AddResidualBlock(
+            new ceres::AutoDiffCostFunction<AsymmetricGaussianFunctor, 1, 1, 1, 1, 1>(
+                new AsymmetricGaussianFunctor(x_values[i], gradients[i])),
+            nullptr, &a, &mu, &sigma1, &sigma2);
     }
-    
+
     problem.SetParameterLowerBound(&sigma1, 0, 0.01);
     problem.SetParameterLowerBound(&sigma2, 0, 0.01);
-    //problem.SetParameterLowerBound(&a, 0, 0.01); // Amplitude is always positive
     problem.SetParameterLowerBound(&mu, 0, x_values.front());
     problem.SetParameterUpperBound(&mu, 0, x_values.back());
 
     ceres::Solver::Options options;
     options.linear_solver_type = ceres::DENSE_QR;
     options.minimizer_progress_to_stdout = false;
-    options.max_num_iterations = 100;
+    options.max_num_iterations = 50;           // Reduced from 100: typically converges in <30
+    options.function_tolerance = 1e-5;         // Early termination when cost barely changes
+    options.gradient_tolerance = 1e-8;
+    options.parameter_tolerance = 1e-6;
 
     ceres::Solve(options, &problem, &summary);
 
-    result.a = a;
-    result.mu = mu;
-    result.sigma1 = sigma1;
-    result.sigma2 = sigma2;
+    result = { a, mu, sigma1, sigma2 };
 
     if (summary.final_cost > 3000.0 || (sigma1 + sigma2) > 2.0)
-    {
         return false;
-    }
-    
-    if (!summary.IsSolutionUsable()) {
-        return false;
-    }
 
-    return true;
+    return summary.IsSolutionUsable();
 }
 
 void super_edge_detector::draw_subpixel_edges(
