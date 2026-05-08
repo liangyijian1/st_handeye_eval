@@ -384,27 +384,39 @@ bool super_edge_detector::radial_profile(const cv::Mat& gray64, const cv::Vec3f&
 
 bool super_edge_detector::cal_profile_gradient(const std::vector<RadialProfileSample>& profile, std::vector<double>& gradients, std::vector<double>& x_values)
 {
-    if (profile.size() < 3) return false;
+    if (profile.size() < 5) return false;
 
-    const size_t n = profile.size() - 2;
-    gradients.reserve(gradients.size() + n);
-    x_values.reserve(x_values.size() + n);
+    const double h = config.radial_step;
+    // 5点求导权重系数：(-1, 8, 0, -8, 1) / (12 * h)
+    const double inv_denominator = 1.0 / (12.0 * h);
 
-    for (size_t i = 1; i <= n; ++i)
+    const size_t n = profile.size();
+    gradients.reserve(n);
+    x_values.reserve(n);
+
+    for (size_t i = 2; i < n - 2; ++i)
     {
-        double grad = (profile[i + 1].intensity - profile[i - 1].intensity) / (profile[i + 1].distance - profile[i - 1].distance);
+        double grad = (profile[i - 2].intensity * 1.0 + 
+                       profile[i - 1].intensity * -8.0 + 
+                       profile[i + 1].intensity * 8.0 + 
+                       profile[i + 2].intensity * -1.0) * inv_denominator;
+
+        double final_grad = 0.0;
         if (config.edge_polarity == 1) {
-            gradients.push_back(std::max(0.0, grad));
+            final_grad = std::max(0.0, grad);
         } 
         else if (config.edge_polarity == -1) {
-            gradients.push_back(std::max(0.0, -grad));
+            final_grad = std::max(0.0, -grad);
         } 
         else {
-            gradients.push_back(std::abs(grad)); 
+            final_grad = std::abs(grad);
         }
+
+        gradients.push_back(final_grad);
         x_values.push_back(profile[i].distance);
     }
-    return true;
+
+    return !gradients.empty();
 }
 
 bool super_edge_detector::ceres_optimization(
