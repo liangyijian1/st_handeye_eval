@@ -24,9 +24,44 @@ static bool makeGray64F(const cv::Mat& image, cv::Mat& gray64)
     return true;
 }
 
+double elegant_score(double x, double theta, double k = 3.0) {
+    if (x <= 0) return 1.0;
+
+    return 1.0 / (1.0 + std::pow(x / theta, k));
+}
+
+float calculate_right_fit_score(
+    const std::vector<double>& x_values, 
+    const std::vector<double>& gradients, 
+    const AsymmetricGaussianResult& res)
+{
+    double sum_sq_err = 0.0;
+    int count = 0;
+
+    double sig_sum = std::abs(res.sigma1) + std::abs(res.sigma2) + 1e-6;
+    double constant_term = res.a * (2.0 / std::sqrt(2.0 * CV_PI)) * (1.0 / sig_sum);
+    double two_sig2_sq = 2.0 * res.sigma2 * res.sigma2 + 1e-9;
+
+    for (size_t i = 0; i < x_values.size(); ++i) {
+        if (x_values[i] < res.mu) continue;
+
+        double diff = x_values[i] - res.mu;
+        double y_pred = constant_term * std::exp(-(diff * diff) / two_sig2_sq);
+        
+        double err = gradients[i] - y_pred;
+        sum_sq_err += err * err;
+        count++;
+    }
+
+    if (count == 0) return 0.0;
+
+    double rmse = std::sqrt(sum_sq_err / count);
+
+    return rmse;
+}
+
 bool super_edge_detector::detect_edges()
 {
-    matplot::gcf()->quiet_mode(true);
     const auto root_path = fs::path(root_path_);
     const fs::path out_root = root_path / "output";
     const fs::path rough_dir = out_root / "rough_detection";
@@ -105,6 +140,7 @@ bool super_edge_detector::detect_edges()
 
             std::vector<AsymmetricGaussianResult> allResults(nd);
             std::vector<ceres::Solver::Summary> allSummaries(nd);
+            std::vector<float> right_fit_scores;
 
             for (int j = 0; j < nd; ++j)
             {
@@ -128,6 +164,9 @@ bool super_edge_detector::detect_edges()
                     total_optimization_shift += std::abs(result.mu - original_radius);
                     valid_points++;
                     rayIndices.push_back(j);
+
+                    // Calculate right fit score
+                    right_fit_scores.push_back(calculate_right_fit_score(x_values, gradients, result));
 
                     if (config.save_crops) {
                         std::vector<cv::Point2d> ray_samples;
@@ -155,32 +194,17 @@ bool super_edge_detector::detect_edges()
                 double confidence = 0.0;
                 double S_cover = static_cast<double>(valid_points) / nd;
 
-                std::vector<double> sigma_sums;
-                for (int j : rayIndices)
-                    sigma_sums.push_back(std::abs(allResults[j].sigma1) + std::abs(allResults[j].sigma2));
-                std::sort(sigma_sums.begin(), sigma_sums.end());
-                double sigma_med = sigma_sums[sigma_sums.size()/2] / 2.0;
-                double S_sharpness = std::exp(-sigma_med / config.ceres_sigma_th);
+                float sigma_sum = 0.0f;
+                for (int j : rayIndices) sigma_sum += static_cast<float>(allResults[j].sigma1 + allResults[j].sigma2);
+                float sigma_avg = sigma_sum / valid_points;
+                double S_sharpness = elegant_score(sigma_avg, config.ceres_sigma_th, 4.0);
 
-                std::vector<double> costs;
-                for (int j : rayIndices)
-                    costs.push_back(allSummaries[j].final_cost);
-                std::sort(costs.begin(), costs.end());
-                double cost_med = costs[costs.size()/2];
-                double S_cost = std::exp(-cost_med / config.ceres_cost_th);
+                float cost_sum = 0.0f;
+                for (int j : rayIndices) cost_sum += static_cast<float>(allSummaries[j].final_cost);
+                float cost_avg = cost_sum / valid_points;
+                double S_cost = elegant_score(cost_avg, config.ceres_cost_th, 6.0);
 
-                double S_circularity = 1.0;
-                std::vector<cv::Point2f> pts;
-                pts.reserve(edgePoints.size());
-                for (const auto& p : edgePoints)
-                    pts.push_back(cv::Point2f(static_cast<float>(p.x), static_cast<float>(p.y)));
-                cv::RotatedRect ellipse = cv::fitEllipse(pts);
-                float a = ellipse.size.width / 2.0f;
-                float b = ellipse.size.height / 2.0f;
-                if (a > 0 && b > 0)
-                    S_circularity = std::min(a, b) / std::max(a, b);
-
-                const int K = 5;
+                const int K = 6;
                 std::vector<int> sector_hit(K, 0);
                 for (int j : rayIndices) {
                     double angle = 2.0 * CV_PI * j / nd;
@@ -193,7 +217,6 @@ bool super_edge_detector::detect_edges()
                 confidence = config.summary_weights.coverage_weight * S_cover + 
                              config.summary_weights.sharpness_weight * S_sharpness + 
                              config.summary_weights.cost_weight * S_cost + 
-                             config.summary_weights.circularity_weight * S_circularity + 
                              config.summary_weights.angular_distribution_weight * S_angular;
                 
 
@@ -204,7 +227,6 @@ bool super_edge_detector::detect_edges()
                              << "    - Coverage: " << std::fixed << std::setprecision(4) << config.summary_weights.coverage_weight * S_cover << "\n"
                              << "    - Sharpness: " << std::fixed << std::setprecision(4) << config.summary_weights.sharpness_weight * S_sharpness << "\n"
                              << "    - Cost: " << std::fixed << std::setprecision(4) << config.summary_weights.cost_weight * S_cost << "\n"
-                             << "    - Circularity: " << std::fixed << std::setprecision(4) << config.summary_weights.circularity_weight * S_circularity << "\n"
                              << "    - Angular distribution: " << std::fixed << std::setprecision(4) << config.summary_weights.angular_distribution_weight * S_angular << "\n"
                              << "    - Overall confidence: " << std::fixed << std::setprecision(4) << confidence << "\n\n";
 
@@ -216,7 +238,7 @@ bool super_edge_detector::detect_edges()
                     roi &= cv::Rect(0, 0, image.cols, image.rows);
 
                     if (roi.width > 0 && roi.height > 0) {
-                        constexpr double scale = 4.0;
+                        constexpr double scale = 8.0;
                         cv::Mat high_res_crop;
                         cv::resize(image(roi), high_res_crop, cv::Size(), scale, scale, cv::INTER_CUBIC);
 
@@ -234,7 +256,8 @@ bool super_edge_detector::detect_edges()
                         }
 
                         cv::imwrite((img_crop_dir / ("circle_" + std::to_string(i) + "_ori.jpg")).string(), high_res_crop);
-                        draw_subpixel_edges(high_res_crop, local_edges, rayIndices, local_samples, 8, DrawMode::DRAW_EDGES | DrawMode::DRAW_CENTERS | DrawMode::DRAW_PROFILES);
+                        draw_subpixel_edges(high_res_crop, local_edges, rayIndices, local_samples, 8, 
+                            DrawMode::DRAW_EDGES | DrawMode::DRAW_CENTERS | DrawMode::DRAW_PROFILES | DrawMode::DRAW_SAMPLES);
                         cv::imwrite((img_crop_dir / ("circle_" + std::to_string(i) + ".jpg")).string(), high_res_crop);
                     }
                 }
@@ -354,7 +377,7 @@ bool super_edge_detector::radial_profile(const cv::Mat& gray64, const cv::Vec3f&
     const double* p_res = profile_result.ptr<double>(0);
     profile.resize(num_samples);
     for (int i = 0; i < num_samples; ++i) {
-        profile[i] = { distances[i], p_res[i], 0.0 };
+        profile[i] = { distances[i], p_res[i]};
     }
     return true;
 }
@@ -370,7 +393,15 @@ bool super_edge_detector::cal_profile_gradient(const std::vector<RadialProfileSa
     for (size_t i = 1; i <= n; ++i)
     {
         double grad = (profile[i + 1].intensity - profile[i - 1].intensity) / (profile[i + 1].distance - profile[i - 1].distance);
-        gradients.push_back(std::abs(grad));
+        if (config.edge_polarity == 1) {
+            gradients.push_back(std::max(0.0, grad));
+        } 
+        else if (config.edge_polarity == -1) {
+            gradients.push_back(std::max(0.0, -grad));
+        } 
+        else {
+            gradients.push_back(std::abs(grad)); 
+        }
         x_values.push_back(profile[i].distance);
     }
     return true;
@@ -498,77 +529,76 @@ void super_edge_detector::plot_fitting_curve(
     double a, double mu, double sigma1, double sigma2, 
     const ceres::Solver::Summary& summary,
     const std::string& save_path,
-    int ray_index)
+    int ray_index
+)
 {
     if (x_values.empty() || gradients.empty() || save_path.empty()) {
         return;
     }
 
-    // Clear previous plots to avoid overlapping elements in loops
-    matplot::cla();
-    matplot::hold(matplot::on);
+    int width = 800;
+    int height = 600;
+    int margin = 60;
+    cv::Mat plot(height, width, CV_8UC3, cv::Scalar(255, 255, 255));
 
-    // 1. Plot raw gradient points as blue circles
-    auto p_points = matplot::plot(x_values, gradients, "ob");
-    p_points->marker_face_color("blue");
-
-    // 2. Prepare fitted curve data
     double min_x = x_values.front();
     double max_x = x_values.back();
+    double max_y = *std::max_element(gradients.begin(), gradients.end());
+    max_y = std::max(max_y * 1.2, 0.1);
+
+    auto map_x = [&](double x) {
+        return margin + static_cast<int>((x - min_x) / (max_x - min_x) * (width - 2 * margin));
+    };
+    auto map_y = [&](double y) {
+        return height - margin - static_cast<int>((y / max_y) * (height - 2 * margin));
+    };
+
+    cv::line(plot, cv::Point(margin, height - margin), cv::Point(width - margin, height - margin), cv::Scalar(0, 0, 0), 2); // X轴
+    cv::line(plot, cv::Point(margin, height - margin), cv::Point(margin, margin), cv::Scalar(0, 0, 0), 2); // Y轴
+    auto final_cost = summary.final_cost;
+
+    std::string cost_str = std::to_string(summary.final_cost);
+    if (cost_str.length() > 6) cost_str = cost_str.substr(0, 6);
+    std::string s1_str = std::to_string(sigma1);
+    if (s1_str.length() > 4) s1_str = s1_str.substr(0, 4);
+    std::string s2_str = std::to_string(sigma2);
+    if (s2_str.length() > 4) s2_str = s2_str.substr(0, 4);
+
+    std::string title = "Cost: " + cost_str + " | S1: " + s1_str + " | S2: " + s2_str;
+    cv::putText(plot, title, cv::Point(margin, margin - 20), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 0, 0), 1);
+
+    for (size_t i = 0; i < x_values.size(); ++i) {
+        cv::Point pt(map_x(x_values[i]), map_y(gradients[i]));
+        cv::circle(plot, pt, 4, cv::Scalar(255, 0, 0), -1, cv::LINE_AA);
+    }
+
     int num_pts = 200;
-    
-    std::vector<double> curve_x, curve_y;
-    curve_x.reserve(num_pts + 1);
-    curve_y.reserve(num_pts + 1);
-
-    double sig1 = std::abs(sigma1) + 1e-6;
-    double sig2 = std::abs(sigma2) + 1e-6;
-    double constant_term = 2.0 / std::sqrt(2.0 * CV_PI);
-
-    // Calculate the Asymmetric Gaussian
+    cv::Point prev_pt(-1, -1);
     for (int i = 0; i <= num_pts; ++i) {
         double x = min_x + i * (max_x - min_x) / num_pts;
+        
+        // Asymmetric Gaussian
+        double sig1 = std::abs(sigma1) + 1e-6;
+        double sig2 = std::abs(sigma2) + 1e-6;
         double diff = x - mu;
         double current_sigma = (diff < 0.0) ? sig1 : sig2;
+        double constant_term = 2.0 / std::sqrt(2.0 * CV_PI);
         double exp_term = std::exp(-(diff * diff) / (2.0 * current_sigma * current_sigma));
         double y = a * constant_term * (1.0 / (sig1 + sig2)) * exp_term;
 
-        curve_x.push_back(x);
-        curve_y.push_back(y);
+        cv::Point pt(map_x(x), map_y(y));
+        if (prev_pt.x != -1) {
+            cv::line(plot, prev_pt, pt, cv::Scalar(0, 0, 255), 2, cv::LINE_AA);
+        }
+        prev_pt = pt;
     }
 
-    // 3. Plot fitted curve as a red line
-    auto p_curve = matplot::plot(curve_x, curve_y, "-r");
-    p_curve->line_width(2);
-
-    // 4. Plot vertical line for Mu (Edge location)
-    double max_y = *std::max_element(gradients.begin(), gradients.end());
-    max_y = std::max(max_y * 1.2, 0.1);
-    
-    if (mu >= min_x && mu <= max_x) {
-        auto p_mu = matplot::plot(std::vector<double>{mu, mu}, std::vector<double>{0.0, max_y}, "-g");
-        p_mu->line_width(1);
-        
-        // Add text label for the Mu line
-        auto txt = matplot::text(mu, max_y * 0.95, "Edge(Mu)");
-        txt->color("green");
+    int mu_x = map_x(mu);
+    if (mu_x >= margin && mu_x <= width - margin) {
+        cv::line(plot, cv::Point(mu_x, height - margin), cv::Point(mu_x, margin), cv::Scalar(0, 200, 0), 1, cv::LINE_AA);
+        cv::putText(plot, "Edge(Mu)", cv::Point(mu_x + 5, margin + 20), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 200, 0), 1);
     }
 
-    // 5. Setup titles, limits, and save
-    std::ostringstream title_stream;
-    title_stream << "Final Cost: " << summary.final_cost 
-                 << ", Sigma1: " << sigma1 
-                 << ", Sigma2: " << sigma2;
-                 
-    matplot::title(title_stream.str());
-    matplot::xlim({min_x, max_x});
-    matplot::ylim({0.0, max_y});
-    
-    // Save the plot (matplot++ automatically infers the format from the .jpg extension)
-    // Note: If you don't want windows popping up during batch processing, ensure your 
-    // matplot++ backend is configured for quiet mode (e.g., using GNUplot backend in batch).
-    matplot::save(save_path);
-
-    matplot::hold(matplot::off);
+    cv::imwrite(save_path, plot);
 }
 

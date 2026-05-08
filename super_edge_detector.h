@@ -9,7 +9,6 @@
 #include <opencv2/opencv.hpp>
 #include <opencv2/ximgproc/edge_drawing.hpp>
 #include <ceres/ceres.h>
-#include <matplot/matplot.h>
 
 namespace fs = std::filesystem;
 
@@ -17,7 +16,6 @@ struct RadialProfileSample
 {
     double distance;  // distance from the center along the direction
     double intensity; // intensity at the sample point
-    double gradient;  // gradient magnitude at the sample point
 };
 
 enum CircleDetectionMethod
@@ -29,10 +27,9 @@ enum CircleDetectionMethod
 struct SummaryWeights
 {
     double coverage_weight = 0.1;
-    double sharpness_weight = 0.35;
-    double cost_weight = 0.2;
-    double circularity_weight = 0.25;
-    double angular_distribution_weight = 0.1;
+    double sharpness_weight = 0.4;
+    double cost_weight = 0.35;
+    double angular_distribution_weight = 0.15;
 };
 
 struct detector_config
@@ -41,6 +38,7 @@ struct detector_config
     int num_directions = 20; // number of radial directions to sample
     double radial_margin = 7; // margin around the detected circle radius to sample
     double radial_step = 0.2; // step size for sampling along the radial direction
+    int edge_polarity = 2; // 0: both, 1: dark-to-bright, 2: bright-to-dark
     // debug parameters
     bool save_plots = false;
     bool save_crops = false;

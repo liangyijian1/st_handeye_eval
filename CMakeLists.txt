@@ -20,20 +20,6 @@ if(MSVC)
     add_definitions(-DNOMINMAX)
 endif()
 
-# # download CPM.cmake
-# file(
-#   DOWNLOAD
-#   https://github.com/cpm-cmake/CPM.cmake/releases/download/v0.42.3/CPM.cmake
-#   ${CMAKE_CURRENT_BINARY_DIR}/cmake/CPM.cmake
-#   EXPECTED_HASH SHA256=a609e875fd532b067174250f6abbc3dac22fe2d64869783fb1e80bda1625c844
-# )
-include(${CMAKE_CURRENT_BINARY_DIR}/cmake/CPM.cmake)
-
-CPMAddPackage(
-    NAME matplotplusplus
-    GITHUB_REPOSITORY alandefreitas/matplotplusplus
-    GIT_TAG v1.2.2 # or whatever tag you want
-)
 
 
 message(STATUS "CMAKE_CXX_FLAGS_RELWITHDEBINFO: ${CMAKE_CXX_FLAGS_RELWITHDEBINFO}")
@@ -83,8 +69,6 @@ add_executable(st_handeye_eval
     super_edge_detector.cpp
     super_edge_detector.h
 )
-
-target_link_libraries(st_handeye_eval PUBLIC matplot)
 
 if(TARGET opencv_world)
     set(ST_HANDEYE_OPENCV_TARGET opencv_world)
