@@ -4,10 +4,11 @@
 #include <string>
 
 
+
 int main(int argc, char** argv)
 {
     detector_config config;
-    config.num_directions = 20;
+    config.num_directions = 32;
     config.radial_margin = 7.0;
     config.radial_step = 0.2;
     config.circle_detection_method = CIRCLE_DETECT_EDGE_DRAWING;
@@ -16,6 +17,7 @@ int main(int argc, char** argv)
     config.save_crops = 1;
 
     config.ceres_cost_th = 700.0;
+    config.ceres_sigma_th = 2.0;
 
 
     super_edge_detector edge_detector("C:\\Users\\yjliang\\Downloads\\st_handeye_eval\\st_handeye_eval\\images", config);

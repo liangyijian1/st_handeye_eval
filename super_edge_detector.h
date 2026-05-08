@@ -9,6 +9,7 @@
 #include <opencv2/opencv.hpp>
 #include <opencv2/ximgproc/edge_drawing.hpp>
 #include <ceres/ceres.h>
+#include <matplot/matplot.h>
 
 namespace fs = std::filesystem;
 
@@ -27,11 +28,11 @@ enum CircleDetectionMethod
 
 struct SummaryWeights
 {
-    double coverage_weight = 0.15;
-    double sharpness_weight = 0.25;
-    double cost_weight = 0.15;
+    double coverage_weight = 0.1;
+    double sharpness_weight = 0.35;
+    double cost_weight = 0.2;
     double circularity_weight = 0.25;
-    double angular_distribution_weight = 0.2;
+    double angular_distribution_weight = 0.1;
 };
 
 struct detector_config

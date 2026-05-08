@@ -6,6 +6,38 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+if (CMAKE_BUILD_TYPE MATCHES "RelWithDebInfo")
+    if (MSVC)
+        # 完全覆盖，而不是在原有基础上追加
+        set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "/Zi /Od /Ob0 /DNDEBUG")
+    else()
+        set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O0 -g -DNDEBUG")
+    endif()
+endif()
+
+if(MSVC)
+    add_compile_options("/utf-8")
+    add_definitions(-DNOMINMAX)
+endif()
+
+# # download CPM.cmake
+# file(
+#   DOWNLOAD
+#   https://github.com/cpm-cmake/CPM.cmake/releases/download/v0.42.3/CPM.cmake
+#   ${CMAKE_CURRENT_BINARY_DIR}/cmake/CPM.cmake
+#   EXPECTED_HASH SHA256=a609e875fd532b067174250f6abbc3dac22fe2d64869783fb1e80bda1625c844
+# )
+include(${CMAKE_CURRENT_BINARY_DIR}/cmake/CPM.cmake)
+
+CPMAddPackage(
+    NAME matplotplusplus
+    GITHUB_REPOSITORY alandefreitas/matplotplusplus
+    GIT_TAG v1.2.2 # or whatever tag you want
+)
+
+
+message(STATUS "CMAKE_CXX_FLAGS_RELWITHDEBINFO: ${CMAKE_CXX_FLAGS_RELWITHDEBINFO}")
+
 # 禁用 CMake 3.24+ 的 SYSTEM 包含目录 /external: 标志（会导致 MSVC 找不到标准库）
 set(CMAKE_NO_SYSTEM_FROM_IMPORTED TRUE)
 
@@ -51,6 +83,8 @@ add_executable(st_handeye_eval
     super_edge_detector.cpp
     super_edge_detector.h
 )
+
+target_link_libraries(st_handeye_eval PUBLIC matplot)
 
 if(TARGET opencv_world)
     set(ST_HANDEYE_OPENCV_TARGET opencv_world)

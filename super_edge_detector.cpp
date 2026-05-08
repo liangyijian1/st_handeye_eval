@@ -158,14 +158,14 @@ bool super_edge_detector::detect_edges()
                     sigma_sums.push_back(std::abs(allResults[j].sigma1) + std::abs(allResults[j].sigma2));
                 std::sort(sigma_sums.begin(), sigma_sums.end());
                 double sigma_med = sigma_sums[sigma_sums.size()/2] / 2.0;
-                double S_sharpness = std::exp(-sigma_med / 2.0);
+                double S_sharpness = std::exp(-sigma_med / config.ceres_sigma_th);
 
                 std::vector<double> costs;
                 for (int j : rayIndices)
                     costs.push_back(allSummaries[j].final_cost);
                 std::sort(costs.begin(), costs.end());
                 double cost_med = costs[costs.size()/2];
-                double S_cost = std::exp(-cost_med / 800.0);
+                double S_cost = std::exp(-cost_med / config.ceres_cost_th);
 
                 double S_circularity = 1.0;
                 std::vector<cv::Point2f> pts;
@@ -178,7 +178,7 @@ bool super_edge_detector::detect_edges()
                 if (a > 0 && b > 0)
                     S_circularity = std::min(a, b) / std::max(a, b);
 
-                const int K = 16;
+                const int K = 5;
                 std::vector<int> sector_hit(K, 0);
                 for (int j : rayIndices) {
                     double angle = 2.0 * CV_PI * j / nd;
@@ -195,7 +195,7 @@ bool super_edge_detector::detect_edges()
                              config.summary_weights.angular_distribution_weight * S_angular;
                 
 
-                summary_file << "The " << i + 1 << " circle (Center X: " << cx_f << ", Y: " << cy_f << ")\n"
+                summary_file << "The " << i << " circle (Center X: " << cx_f << ", Y: " << cy_f << ")\n"
                              << "   Sub-pixel edge points generated: " << valid_points << "/" << nd << "\n"
                              << "   Average coordinate correction: " << std::fixed << std::setprecision(4) << avg_shift << " px\n"
                              << "   Confidence details after weighting:\n"
@@ -232,7 +232,7 @@ bool super_edge_detector::detect_edges()
                         }
 
                         cv::imwrite((img_crop_dir / ("circle_" + std::to_string(i) + "_ori.jpg")).string(), high_res_crop);
-                        draw_subpixel_edges(high_res_crop, local_edges, rayIndices, local_samples, 8);
+                        draw_subpixel_edges(high_res_crop, local_edges, rayIndices, local_samples, 8, DrawMode::DRAW_EDGES | DrawMode::DRAW_CENTERS | DrawMode::DRAW_PROFILES);
                         cv::imwrite((img_crop_dir / ("circle_" + std::to_string(i) + ".jpg")).string(), high_res_crop);
                     }
                 }
@@ -496,8 +496,7 @@ void super_edge_detector::plot_fitting_curve(
     double a, double mu, double sigma1, double sigma2, 
     const ceres::Solver::Summary& summary,
     const std::string& save_path,
-    int ray_index
-)
+    int ray_index)
 {
     if (x_values.empty() || gradients.empty() || save_path.empty()) {
         return;
