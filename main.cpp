@@ -20,7 +20,7 @@ int main(int argc, char** argv)
     config.ceres_sigma_th = 2.0;
 
 
-    super_edge_detector edge_detector("C:\\Users\\yjliang\\Downloads\\st_handeye_eval\\st_handeye_eval\\images", config);
+    super_edge_detector edge_detector("C:/Users/yjliang/Downloads/st_handeye_eval/st_handeye_eval/images", config);
     edge_detector.detect_edges();
 
     std::cout << "\nProcessing complete!" << std::endl;

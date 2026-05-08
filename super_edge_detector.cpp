@@ -26,6 +26,7 @@ static bool makeGray64F(const cv::Mat& image, cv::Mat& gray64)
 
 bool super_edge_detector::detect_edges()
 {
+    matplot::gcf()->quiet_mode(true);
     const auto root_path = fs::path(root_path_);
     const fs::path out_root = root_path / "output";
     const fs::path rough_dir = out_root / "rough_detection";
@@ -139,8 +140,9 @@ bool super_edge_detector::detect_edges()
                 allResults[j] = result;
                 allSummaries[j] = summary;
                 if (config.save_plots) {
-                    std::string plot_path = (img_plot_dir / ("circle_" + std::to_string(i) + "_ray_" + std::to_string(j) + "_curve.jpg")).string();
-                    plot_fitting_curve(x_values, gradients, result.a, result.mu, result.sigma1, result.sigma2, summary, plot_path, j);
+                    fs::path plot_path_fs = img_plot_dir / ("circle_" + std::to_string(i) + "_ray_" + std::to_string(j) + "_curve.jpg");
+                    std::string final_save_path = plot_path_fs.generic_string();
+                    plot_fitting_curve(x_values, gradients, result.a, result.mu, result.sigma1, result.sigma2, summary, final_save_path, j);
                 }
             }
 
@@ -502,62 +504,71 @@ void super_edge_detector::plot_fitting_curve(
         return;
     }
 
-    int width = 800;
-    int height = 600;
-    int margin = 60;
-    cv::Mat plot(height, width, CV_8UC3, cv::Scalar(255, 255, 255));
+    // Clear previous plots to avoid overlapping elements in loops
+    matplot::cla();
+    matplot::hold(matplot::on);
 
+    // 1. Plot raw gradient points as blue circles
+    auto p_points = matplot::plot(x_values, gradients, "ob");
+    p_points->marker_face_color("blue");
+
+    // 2. Prepare fitted curve data
     double min_x = x_values.front();
     double max_x = x_values.back();
-    double max_y = *std::max_element(gradients.begin(), gradients.end());
-    max_y = std::max(max_y * 1.2, 0.1);
-
-    auto map_x = [&](double x) {
-        return margin + static_cast<int>((x - min_x) / (max_x - min_x) * (width - 2 * margin));
-    };
-    auto map_y = [&](double y) {
-        return height - margin - static_cast<int>((y / max_y) * (height - 2 * margin));
-    };
-
-    cv::line(plot, cv::Point(margin, height - margin), cv::Point(width - margin, height - margin), cv::Scalar(0, 0, 0), 2); // X轴
-    cv::line(plot, cv::Point(margin, height - margin), cv::Point(margin, margin), cv::Scalar(0, 0, 0), 2); // Y轴
-    auto final_cost = summary.final_cost;
-
-    std::string title = "Final Cost: " + std::to_string(final_cost) + ", Sigma1: " + std::to_string(sigma1) + ", Sigma2: " + std::to_string(sigma2);
-    cv::putText(plot, title, cv::Point(margin, margin - 20), cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 0, 0), 1);
-
-    for (size_t i = 0; i < x_values.size(); ++i) {
-        cv::Point pt(map_x(x_values[i]), map_y(gradients[i]));
-        cv::circle(plot, pt, 4, cv::Scalar(255, 0, 0), -1, cv::LINE_AA);
-    }
-
     int num_pts = 200;
-    cv::Point prev_pt(-1, -1);
+    
+    std::vector<double> curve_x, curve_y;
+    curve_x.reserve(num_pts + 1);
+    curve_y.reserve(num_pts + 1);
+
+    double sig1 = std::abs(sigma1) + 1e-6;
+    double sig2 = std::abs(sigma2) + 1e-6;
+    double constant_term = 2.0 / std::sqrt(2.0 * CV_PI);
+
+    // Calculate the Asymmetric Gaussian
     for (int i = 0; i <= num_pts; ++i) {
         double x = min_x + i * (max_x - min_x) / num_pts;
-        
-        // Asymmetric Gaussian
-        double sig1 = std::abs(sigma1) + 1e-6;
-        double sig2 = std::abs(sigma2) + 1e-6;
         double diff = x - mu;
         double current_sigma = (diff < 0.0) ? sig1 : sig2;
-        double constant_term = 2.0 / std::sqrt(2.0 * CV_PI);
         double exp_term = std::exp(-(diff * diff) / (2.0 * current_sigma * current_sigma));
         double y = a * constant_term * (1.0 / (sig1 + sig2)) * exp_term;
 
-        cv::Point pt(map_x(x), map_y(y));
-        if (prev_pt.x != -1) {
-            cv::line(plot, prev_pt, pt, cv::Scalar(0, 0, 255), 2, cv::LINE_AA);
-        }
-        prev_pt = pt;
+        curve_x.push_back(x);
+        curve_y.push_back(y);
     }
 
-    int mu_x = map_x(mu);
-    if (mu_x >= margin && mu_x <= width - margin) {
-        cv::line(plot, cv::Point(mu_x, height - margin), cv::Point(mu_x, margin), cv::Scalar(0, 200, 0), 1, cv::LINE_AA);
-        cv::putText(plot, "Edge(Mu)", cv::Point(mu_x + 5, margin + 20), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 200, 0), 1);
+    // 3. Plot fitted curve as a red line
+    auto p_curve = matplot::plot(curve_x, curve_y, "-r");
+    p_curve->line_width(2);
+
+    // 4. Plot vertical line for Mu (Edge location)
+    double max_y = *std::max_element(gradients.begin(), gradients.end());
+    max_y = std::max(max_y * 1.2, 0.1);
+    
+    if (mu >= min_x && mu <= max_x) {
+        auto p_mu = matplot::plot(std::vector<double>{mu, mu}, std::vector<double>{0.0, max_y}, "-g");
+        p_mu->line_width(1);
+        
+        // Add text label for the Mu line
+        auto txt = matplot::text(mu, max_y * 0.95, "Edge(Mu)");
+        txt->color("green");
     }
 
-    cv::imwrite(save_path, plot);
+    // 5. Setup titles, limits, and save
+    std::ostringstream title_stream;
+    title_stream << "Final Cost: " << summary.final_cost 
+                 << ", Sigma1: " << sigma1 
+                 << ", Sigma2: " << sigma2;
+                 
+    matplot::title(title_stream.str());
+    matplot::xlim({min_x, max_x});
+    matplot::ylim({0.0, max_y});
+    
+    // Save the plot (matplot++ automatically infers the format from the .jpg extension)
+    // Note: If you don't want windows popping up during batch processing, ensure your 
+    // matplot++ backend is configured for quiet mode (e.g., using GNUplot backend in batch).
+    matplot::save(save_path);
+
+    matplot::hold(matplot::off);
 }
 
