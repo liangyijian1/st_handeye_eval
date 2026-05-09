@@ -14,8 +14,8 @@ int main(int argc, char** argv)
     config.circle_detection_method = CIRCLE_DETECT_EDGE_DRAWING;
     config.edge_polarity = 2; // bright-to-dark edges
 
-    config.save_plots = 1;
-    config.save_crops = 1;
+    config.save_plots = 0;
+    config.save_crops = 0;
 
     config.ceres_cost_th = 1000.0;
     config.ceres_sigma_th = 2.0;

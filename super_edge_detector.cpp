@@ -1,4 +1,4 @@
-#include "super_edge_detector.h"
+﻿#include "super_edge_detector.h"
 
 #include <algorithm>
 #include <cmath>
@@ -57,7 +57,53 @@ float calculate_right_fit_score(
 
     double rmse = std::sqrt(sum_sq_err / count);
 
-    return rmse;
+    return static_cast<float>(rmse);
+}
+
+static void draw_profile_plot(const std::vector<RadialProfileSample>& prof, const std::string& title, const std::string& save_path, double mu, double distance_scale) {
+    if (prof.empty()) return;
+
+    int pw = 800, ph = 600, pm = 60;
+    cv::Mat prof_plot(ph, pw, CV_8UC3, cv::Scalar(255, 255, 255));
+
+    double px_min = prof.front().distance / distance_scale;
+    double px_max = prof.back().distance / distance_scale;
+
+    auto [min_it, max_it] = std::minmax_element(prof.begin(), prof.end(),
+        [](const RadialProfileSample& a, const RadialProfileSample& b) {
+            return a.intensity < b.intensity;
+        });
+    double py_min = min_it->intensity;
+    double py_max = max_it->intensity;
+
+    if (py_max - py_min < 1e-6) py_max = py_min + 1.0;
+    double py_range = py_max - py_min;
+    py_min -= py_range * 0.05;
+    py_max += py_range * 0.05;
+
+    auto map_x = [&](double x) { return pm + static_cast<int>((x - px_min) / (px_max - px_min) * (pw - 2 * pm)); };
+    auto map_y = [&](double y) { return ph - pm - static_cast<int>((y - py_min) / (py_max - py_min) * (ph - 2 * pm)); };
+
+    cv::line(prof_plot, cv::Point(pm, ph - pm), cv::Point(pw - pm, ph - pm), cv::Scalar(0, 0, 0), 2);
+    cv::line(prof_plot, cv::Point(pm, ph - pm), cv::Point(pm, pm), cv::Scalar(0, 0, 0), 2);
+    cv::putText(prof_plot, title, cv::Point(pm, pm - 20), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 0, 0), 1);
+    cv::putText(prof_plot, "Distance", cv::Point(pw / 2 - 30, ph - 10), cv::FONT_HERSHEY_SIMPLEX, 0.45, cv::Scalar(0, 0, 0), 1);
+    cv::putText(prof_plot, "Intensity", cv::Point(5, pm - 5), cv::FONT_HERSHEY_SIMPLEX, 0.45, cv::Scalar(0, 0, 0), 1);
+
+    cv::Point prev_p(-1, -1);
+    for (const auto& s : prof) {
+        cv::Point p(map_x(s.distance / distance_scale), map_y(s.intensity));
+        cv::circle(prof_plot, p, 3, cv::Scalar(200, 0, 0), -1, cv::LINE_AA);
+        if (prev_p.x != -1) cv::line(prof_plot, prev_p, p, cv::Scalar(200, 120, 0), 1, cv::LINE_AA);
+        prev_p = p;
+    }
+
+    int mu_px = map_x(mu);
+    if (mu_px >= pm && mu_px <= pw - pm) {
+        cv::line(prof_plot, cv::Point(mu_px, ph - pm), cv::Point(mu_px, pm), cv::Scalar(0, 200, 0), 1, cv::LINE_AA);
+        cv::putText(prof_plot, "Edge(Mu)", cv::Point(mu_px + 5, pm + 20), cv::FONT_HERSHEY_SIMPLEX, 0.45, cv::Scalar(0, 200, 0), 1);
+    }
+    cv::imwrite(save_path, prof_plot);
 }
 
 void super_edge_detector::radial_profile_manual(
@@ -243,16 +289,15 @@ bool super_edge_detector::detect_edges()
                             ray_samples.emplace_back(cx_f + s.distance * dir.x, cy_f + s.distance * dir.y);
                         samplePoints2D.push_back(std::move(ray_samples));
                     }
-                }
-                allResults[j] = result;
-                allSummaries[j] = summary;
-                if (config.save_plots) {
+
+                    if (config.save_plots) {
                     fs::path plot_path_fs = img_plot_dir / ("circle_" + std::to_string(i) + "_ray_" + std::to_string(j) + "_curve.jpg");
                     std::string final_save_path = plot_path_fs.generic_string();
                     plot_fitting_curve(x_values, gradients, result.a, result.mu, result.sigma1, result.sigma2, summary, final_save_path, j);
 
-                    // DEBUG: 临时添加，绘制放大后图的梯度采样图
-                    // --- 放置在你的 DEBUG 临时代码块中 ---
+                    std::string prof_save_path = (img_plot_dir / ("circle_" + std::to_string(i) + "_ray_" + std::to_string(j) + "_profile.jpg")).generic_string();
+                    draw_profile_plot(profile, "Original Grayscale Profile | Circle " + std::to_string(i) + " Ray " + std::to_string(j), prof_save_path, result.mu, 1.0);
+
                     if (config.save_crops && !rayIndices.empty()) {
                         int pad = static_cast<int>(config.radial_margin) + 15;
                         int cx = cvRound(cx_f), cy = cvRound(cy_f), r = cvRound(original_radius);
@@ -261,17 +306,13 @@ bool super_edge_detector::detect_edges()
                         constexpr double scale = 8.0;
                         cv::Mat high_res_crop;
                         cv::resize(image(roi), high_res_crop, cv::Size(), scale, scale, cv::INTER_CUBIC);
-                        // 1. 获取放大后的灰度图
                         cv::Mat gray_high_res_crop;
                         makeGray64F(high_res_crop, gray_high_res_crop);
 
-                        // 2. 计算在放大图上的圆心和方向（局部坐标）
-                        // 放大图的 (0,0) 对应原图的 roi.x, roi.y
                         cv::Point2d local_center((cx_f - roi.x) * scale, (cy_f - roi.y) * scale);
                         double local_radius = original_radius * scale;
-                        cv::Vec3f debug_circle(local_center.x, local_center.y, local_radius);
+                        cv::Vec3f debug_circle(static_cast<float>(local_center.x), static_cast<float>(local_center.y), static_cast<float>(local_radius));
                         
-                        // 3. 设定采样参数
                         double debug_margin = config.radial_margin * scale;
                         double debug_step = config.radial_step * scale; 
 
@@ -283,22 +324,21 @@ bool super_edge_detector::detect_edges()
                         cal_profile_gradient_manual(profile_debug, debug_step, config.edge_polarity, 
                                                 gradients_debug, x_values_debug);
 
-                        // 4. 重要：将 x 轴变回原图尺度，方便在同一个坐标系对比
                         for (auto& x : x_values_debug) {
-                            // x_values 原始是相对于 local_center 的绝对距离，我们需要它相对于“原始圆心”
-                            x = x / scale; 
+                            x = x / scale;
                         }
 
-                        // 5. 绘图验证
                         std::string debug_plot_path = (img_plot_dir / ("circle_" + std::to_string(i) + "_ray_" + std::to_string(j) + "_debug_curve.jpg")).generic_string();
-                        // 传入 Summary() 这样不会画拟合曲线，只看数据点
-                        plot_fitting_curve(x_values_debug, gradients_debug, 0, 0, 0, 0, 
+                        plot_fitting_curve(x_values_debug, gradients_debug, 0, 0, 0, 0,
                                         ceres::Solver::Summary(), debug_plot_path, j);
-                    }
-                    
-                    // END DEBUG
 
+                        std::string debug_prof_save_path = (img_plot_dir / ("circle_" + std::to_string(i) + "_ray_" + std::to_string(j) + "_debug_profile.jpg")).generic_string();
+                        draw_profile_plot(profile_debug, "Upscaled Grayscale Profile | Circle " + std::to_string(i) + " Ray " + std::to_string(j), debug_prof_save_path, result.mu, scale);
+                    }
                 }
+                }
+                allResults[j] = result;
+                allSummaries[j] = summary;
             }
 
             if (valid_points > 5)
