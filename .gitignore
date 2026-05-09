@@ -6,3 +6,5 @@ build
 calib_test
 *.md
 images
+.gitnexus
+.claude/settings.local.json

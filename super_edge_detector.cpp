@@ -30,35 +30,6 @@ double elegant_score(double x, double theta, double k = 3.0) {
     return 1.0 / (1.0 + std::pow(x / theta, k));
 }
 
-float calculate_right_fit_score(
-    const std::vector<double>& x_values, 
-    const std::vector<double>& gradients, 
-    const AsymmetricGaussianResult& res)
-{
-    double sum_sq_err = 0.0;
-    int count = 0;
-
-    double sig_sum = std::abs(res.sigma1) + std::abs(res.sigma2) + 1e-6;
-    double constant_term = res.a * (2.0 / std::sqrt(2.0 * CV_PI)) * (1.0 / sig_sum);
-    double two_sig2_sq = 2.0 * res.sigma2 * res.sigma2 + 1e-9;
-
-    for (size_t i = 0; i < x_values.size(); ++i) {
-        if (x_values[i] < res.mu) continue;
-
-        double diff = x_values[i] - res.mu;
-        double y_pred = constant_term * std::exp(-(diff * diff) / two_sig2_sq);
-        
-        double err = gradients[i] - y_pred;
-        sum_sq_err += err * err;
-        count++;
-    }
-
-    if (count == 0) return 0.0;
-
-    double rmse = std::sqrt(sum_sq_err / count);
-
-    return static_cast<float>(rmse);
-}
 
 static void draw_profile_plot(const std::vector<RadialProfileSample>& prof, const std::string& title, const std::string& save_path, double mu, double distance_scale) {
     if (prof.empty()) return;
@@ -145,6 +116,7 @@ void super_edge_detector::radial_profile_manual(
         profile[i] = { distances[i], p_res[i] };
     }
 }
+
 
 void super_edge_detector::cal_profile_gradient_manual(
     const std::vector<RadialProfileSample>& profile, 
@@ -273,14 +245,12 @@ bool super_edge_detector::detect_edges()
                 // 5. Ceres optimization
                 AsymmetricGaussianResult result;
                 ceres::Solver::Summary summary;
-                if (ceres_optimization(gradients, x_values, result, summary)) {
+                bool opt_success = ceres_optimization(gradients, x_values, result, summary);
+                if (opt_success) {
                     edgePoints.emplace_back(cx_f + result.mu * dir.x, cy_f + result.mu * dir.y);
                     total_optimization_shift += std::abs(result.mu - original_radius);
                     valid_points++;
                     rayIndices.push_back(j);
-
-                    // Calculate right fit score
-                    right_fit_scores.push_back(calculate_right_fit_score(x_values, gradients, result));
 
                     if (config.save_crops) {
                         std::vector<cv::Point2d> ray_samples;
@@ -289,16 +259,18 @@ bool super_edge_detector::detect_edges()
                             ray_samples.emplace_back(cx_f + s.distance * dir.x, cy_f + s.distance * dir.y);
                         samplePoints2D.push_back(std::move(ray_samples));
                     }
+                }
 
-                    if (config.save_plots) {
-                    fs::path plot_path_fs = img_plot_dir / ("circle_" + std::to_string(i) + "_ray_" + std::to_string(j) + "_curve.jpg");
+                if (config.save_plots) {
+                    std::string status_suffix = opt_success ? "" : "_FAILED";
+                    fs::path plot_path_fs = img_plot_dir / ("circle_" + std::to_string(i) + "_ray_" + std::to_string(j) + status_suffix + "_curve.jpg");
                     std::string final_save_path = plot_path_fs.generic_string();
                     plot_fitting_curve(x_values, gradients, result.a, result.mu, result.sigma1, result.sigma2, summary, final_save_path, j);
 
-                    std::string prof_save_path = (img_plot_dir / ("circle_" + std::to_string(i) + "_ray_" + std::to_string(j) + "_profile.jpg")).generic_string();
+                    std::string prof_save_path = (img_plot_dir / ("circle_" + std::to_string(i) + "_ray_" + std::to_string(j) + status_suffix + "_profile.jpg")).generic_string();
                     draw_profile_plot(profile, "Original Grayscale Profile | Circle " + std::to_string(i) + " Ray " + std::to_string(j), prof_save_path, result.mu, 1.0);
 
-                    if (config.save_crops && !rayIndices.empty()) {
+                    if (config.save_crops) {
                         int pad = static_cast<int>(config.radial_margin) + 15;
                         int cx = cvRound(cx_f), cy = cvRound(cy_f), r = cvRound(original_radius);
                         cv::Rect roi(cx - r - pad, cy - r - pad, 2 * (r + pad), 2 * (r + pad));
@@ -312,30 +284,29 @@ bool super_edge_detector::detect_edges()
                         cv::Point2d local_center((cx_f - roi.x) * scale, (cy_f - roi.y) * scale);
                         double local_radius = original_radius * scale;
                         cv::Vec3f debug_circle(static_cast<float>(local_center.x), static_cast<float>(local_center.y), static_cast<float>(local_radius));
-                        
+
                         double debug_margin = config.radial_margin * scale;
-                        double debug_step = config.radial_step * scale; 
+                        double debug_step = config.radial_step * scale;
 
                         std::vector<RadialProfileSample> profile_debug;
-                        radial_profile_manual(gray_high_res_crop, debug_circle, directions[j], 
+                        radial_profile_manual(gray_high_res_crop, debug_circle, directions[j],
                                             debug_margin, debug_step, profile_debug);
 
                         std::vector<double> gradients_debug, x_values_debug;
-                        cal_profile_gradient_manual(profile_debug, debug_step, config.edge_polarity, 
+                        cal_profile_gradient_manual(profile_debug, debug_step, config.edge_polarity,
                                                 gradients_debug, x_values_debug);
 
                         for (auto& x : x_values_debug) {
                             x = x / scale;
                         }
 
-                        std::string debug_plot_path = (img_plot_dir / ("circle_" + std::to_string(i) + "_ray_" + std::to_string(j) + "_debug_curve.jpg")).generic_string();
+                        std::string debug_plot_path = (img_plot_dir / ("circle_" + std::to_string(i) + "_ray_" + std::to_string(j) + status_suffix + "_debug_curve.jpg")).generic_string();
                         plot_fitting_curve(x_values_debug, gradients_debug, 0, 0, 0, 0,
                                         ceres::Solver::Summary(), debug_plot_path, j);
 
-                        std::string debug_prof_save_path = (img_plot_dir / ("circle_" + std::to_string(i) + "_ray_" + std::to_string(j) + "_debug_profile.jpg")).generic_string();
+                        std::string debug_prof_save_path = (img_plot_dir / ("circle_" + std::to_string(i) + "_ray_" + std::to_string(j) + status_suffix + "_debug_profile.jpg")).generic_string();
                         draw_profile_plot(profile_debug, "Upscaled Grayscale Profile | Circle " + std::to_string(i) + " Ray " + std::to_string(j), debug_prof_save_path, result.mu, scale);
                     }
-                }
                 }
                 allResults[j] = result;
                 allSummaries[j] = summary;
@@ -465,7 +436,7 @@ bool super_edge_detector::detect_circles(const cv::Mat& image, std::vector<cv::V
             const double radius = (ellipse[2] > 0.0)
                                       ? ellipse[2]
                                       : 0.5 * (std::abs(ellipse[3]) + std::abs(ellipse[4]));
-            if (radius >= 4.0 && radius <= 15.0) {
+            if (radius >= config.circle_radius_min && radius <= config.circle_radius_max) {
                 circles.emplace_back(static_cast<float>(ellipse[0]),
                                      static_cast<float>(ellipse[1]),
                                      static_cast<float>(radius));
@@ -480,8 +451,8 @@ bool super_edge_detector::detect_circles(const cv::Mat& image, std::vector<cv::V
                          30,     // minDist
                          180,    // param1
                          0.9,    // param2
-                         4,      // minRadius
-                         15);    // maxRadius
+                         int(std::round(config.circle_radius_min)),      // minRadius
+                         int(std::round(config.circle_radius_max)));    // maxRadius
     }
 
     if (!save_path.empty()) {
@@ -582,13 +553,16 @@ bool super_edge_detector::ceres_optimization(
     ceres::Solver::Summary& summary)
 {
     auto max_it = std::max_element(gradients.begin(), gradients.end());
-    if (*max_it < 5.0) return false;
-
     auto max_idx = std::distance(gradients.begin(), max_it);
     double a = *max_it;
     double mu = x_values[max_idx];
     double sigma1 = 2.0;
     double sigma2 = 2.0;
+
+    // Populating result early so plots have a fallback mu
+    result = { a, mu, sigma1, sigma2 };
+
+    if (a < 5.0) return false;
 
     ceres::Problem problem;
     for (size_t i = 0; i < x_values.size(); ++i)

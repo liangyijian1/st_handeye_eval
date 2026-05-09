@@ -45,6 +45,8 @@ struct detector_config
     SummaryWeights summary_weights;
     // circle detection parameters
     int circle_detection_method = CIRCLE_DETECT_EDGE_DRAWING;
+    float circle_radius_min = 4.0f;
+    float circle_radius_max = 15.0f;
     // ceres optimization parameters
     float ceres_cost_th = 3000.0;
     float ceres_sigma_th = 2.0;
