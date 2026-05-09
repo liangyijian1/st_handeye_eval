@@ -60,6 +60,74 @@ float calculate_right_fit_score(
     return rmse;
 }
 
+void super_edge_detector::radial_profile_manual(
+    const cv::Mat& gray64, 
+    const cv::Vec3f& center, 
+    const cv::Point2d& unitDirection, 
+    double margin, 
+    double step, 
+    std::vector<RadialProfileSample>& profile)
+{
+    const double radius = static_cast<double>(center[2]);
+    const cv::Point2d circleCenter(static_cast<double>(center[0]), static_cast<double>(center[1]));
+
+    const double startDistance = std::max(0.0, radius - margin);
+    const double endDistance = radius + margin;
+
+    const int num_samples = static_cast<int>(std::floor((endDistance - startDistance) / step)) + 1;
+    if (num_samples <= 0) return;
+
+    cv::Mat map_x(1, num_samples, CV_32FC1);
+    cv::Mat map_y(1, num_samples, CV_32FC1);
+    float* p_map_x = map_x.ptr<float>(0);
+    float* p_map_y = map_y.ptr<float>(0);
+    std::vector<double> distances(num_samples);
+
+    for (int i = 0; i < num_samples; ++i) {
+        double distance = startDistance + i * step;
+        distances[i] = distance;
+        p_map_x[i] = static_cast<float>(circleCenter.x + unitDirection.x * distance);
+        p_map_y[i] = static_cast<float>(circleCenter.y + unitDirection.y * distance);
+    }
+
+    cv::Mat profile_result;
+    cv::remap(gray64, profile_result, map_x, map_y, cv::INTER_CUBIC, cv::BORDER_REPLICATE);
+
+    const double* p_res = profile_result.ptr<double>(0);
+    profile.resize(num_samples);
+    for (int i = 0; i < num_samples; ++i) {
+        profile[i] = { distances[i], p_res[i] };
+    }
+}
+
+void super_edge_detector::cal_profile_gradient_manual(
+    const std::vector<RadialProfileSample>& profile, 
+    double step, 
+    int polarity,
+    std::vector<double>& gradients, 
+    std::vector<double>& x_values)
+{
+    if (profile.size() < 5) return;
+
+    const double inv_denominator = 1.0 / (12.0 * step);
+    const size_t n = profile.size();
+
+    for (size_t i = 2; i < n - 2; ++i) {
+        double grad = (profile[i - 2].intensity * 1.0 + 
+                       profile[i - 1].intensity * -8.0 + 
+                       profile[i + 1].intensity * 8.0 + 
+                       profile[i + 2].intensity * -1.0) * inv_denominator;
+
+        double final_grad = 0.0;
+        if (polarity == 1)      final_grad = std::max(0.0, grad);
+        else if (polarity == -1) final_grad = std::max(0.0, -grad);
+        else                     final_grad = std::abs(grad);
+
+        gradients.push_back(final_grad);
+        x_values.push_back(profile[i].distance);
+    }
+}
+
 bool super_edge_detector::detect_edges()
 {
     const auto root_path = fs::path(root_path_);
@@ -182,6 +250,54 @@ bool super_edge_detector::detect_edges()
                     fs::path plot_path_fs = img_plot_dir / ("circle_" + std::to_string(i) + "_ray_" + std::to_string(j) + "_curve.jpg");
                     std::string final_save_path = plot_path_fs.generic_string();
                     plot_fitting_curve(x_values, gradients, result.a, result.mu, result.sigma1, result.sigma2, summary, final_save_path, j);
+
+                    // DEBUG: 临时添加，绘制放大后图的梯度采样图
+                    // --- 放置在你的 DEBUG 临时代码块中 ---
+                    if (config.save_crops && !rayIndices.empty()) {
+                        int pad = static_cast<int>(config.radial_margin) + 15;
+                        int cx = cvRound(cx_f), cy = cvRound(cy_f), r = cvRound(original_radius);
+                        cv::Rect roi(cx - r - pad, cy - r - pad, 2 * (r + pad), 2 * (r + pad));
+                        roi &= cv::Rect(0, 0, image.cols, image.rows);
+                        constexpr double scale = 8.0;
+                        cv::Mat high_res_crop;
+                        cv::resize(image(roi), high_res_crop, cv::Size(), scale, scale, cv::INTER_CUBIC);
+                        // 1. 获取放大后的灰度图
+                        cv::Mat gray_high_res_crop;
+                        makeGray64F(high_res_crop, gray_high_res_crop);
+
+                        // 2. 计算在放大图上的圆心和方向（局部坐标）
+                        // 放大图的 (0,0) 对应原图的 roi.x, roi.y
+                        cv::Point2d local_center((cx_f - roi.x) * scale, (cy_f - roi.y) * scale);
+                        double local_radius = original_radius * scale;
+                        cv::Vec3f debug_circle(local_center.x, local_center.y, local_radius);
+                        
+                        // 3. 设定采样参数
+                        double debug_margin = config.radial_margin * scale;
+                        double debug_step = config.radial_step * scale; 
+
+                        std::vector<RadialProfileSample> profile_debug;
+                        radial_profile_manual(gray_high_res_crop, debug_circle, directions[j], 
+                                            debug_margin, debug_step, profile_debug);
+
+                        std::vector<double> gradients_debug, x_values_debug;
+                        cal_profile_gradient_manual(profile_debug, debug_step, config.edge_polarity, 
+                                                gradients_debug, x_values_debug);
+
+                        // 4. 重要：将 x 轴变回原图尺度，方便在同一个坐标系对比
+                        for (auto& x : x_values_debug) {
+                            // x_values 原始是相对于 local_center 的绝对距离，我们需要它相对于“原始圆心”
+                            x = x / scale; 
+                        }
+
+                        // 5. 绘图验证
+                        std::string debug_plot_path = (img_plot_dir / ("circle_" + std::to_string(i) + "_ray_" + std::to_string(j) + "_debug_curve.jpg")).generic_string();
+                        // 传入 Summary() 这样不会画拟合曲线，只看数据点
+                        plot_fitting_curve(x_values_debug, gradients_debug, 0, 0, 0, 0, 
+                                        ceres::Solver::Summary(), debug_plot_path, j);
+                    }
+                    
+                    // END DEBUG
+
                 }
             }
 

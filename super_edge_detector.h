@@ -111,6 +111,8 @@ public:
         : root_path_(root_path), config(config)
     {};
     ~super_edge_detector() {};
+    void radial_profile_manual(const cv::Mat &gray64, const cv::Vec3f &center, const cv::Point2d &unitDirection, double margin, double step, std::vector<RadialProfileSample> &profile);
+    void cal_profile_gradient_manual(const std::vector<RadialProfileSample> &profile, double step, int polarity, std::vector<double> &gradients, std::vector<double> &x_values);
     bool detect_edges();
 
 private:
