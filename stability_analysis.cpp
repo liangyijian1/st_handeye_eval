@@ -41,13 +41,23 @@ double stddev_value(const std::vector<double>& values, double mean)
     return std::sqrt(sum / static_cast<double>(values.size()));
 }
 
-cv::Point2d rough_center(const CircleDetectionRecord& record)
+cv::Point2d record_center(const CircleDetectionRecord& record)
 {
+    if (record.has_optimized_contour) {
+        return cv::Point2d(record.optimized_contour.center.x, record.optimized_contour.center.y);
+    }
     return cv::Point2d(record.rough_circle[0], record.rough_circle[1]);
 }
 
-double rough_radius(const CircleDetectionRecord& record)
+double record_radius(const CircleDetectionRecord& record)
 {
+    if (record.has_optimized_contour) {
+        const double major_axis = std::max(record.optimized_contour.size.width, record.optimized_contour.size.height);
+        const double minor_axis = std::min(record.optimized_contour.size.width, record.optimized_contour.size.height);
+        if (major_axis > 0.0 && minor_axis > 0.0) {
+            return 0.25 * (major_axis + minor_axis);
+        }
+    }
     return static_cast<double>(record.rough_circle[2]);
 }
 
@@ -144,14 +154,14 @@ StabilityMetricResult evaluate_temporal_stability(const std::vector<CircleDetect
 
     cv::Point2d mean_center(0.0, 0.0);
     for (const auto& record : track) {
-        mean_center += rough_center(record);
-        radii.push_back(rough_radius(record));
+        mean_center += record_center(record);
+        radii.push_back(record_radius(record));
         confidences.push_back(record.confidence);
     }
     mean_center *= 1.0 / static_cast<double>(track.size());
 
     for (const auto& record : track) {
-        centers.push_back(cv::norm(rough_center(record) - mean_center));
+        centers.push_back(cv::norm(record_center(record) - mean_center));
     }
 
     details.center_jitter = score_small_is_good(mean_value(centers), 2.0);
@@ -180,7 +190,7 @@ StabilityMetricResult evaluate_topology_stability(const std::vector<CircleDetect
     std::vector<double> mean_angles;
 
     for (size_t i = 0; i < neighbors.size(); ++i) {
-        const cv::Point2d center = rough_center(track[i]);
+        const cv::Point2d center = record_center(track[i]);
         neighbor_counts.push_back(static_cast<double>(neighbors[i].neighbor_centers.size()));
 
         std::vector<double> distances;
@@ -220,14 +230,14 @@ StabilityMetricResult evaluate_brightness_consistency(const std::vector<CircleDe
     cv::Point2d mean_center(0.0, 0.0);
 
     for (const auto& record : track) {
-        mean_center += rough_center(record);
+        mean_center += record_center(record);
         contrasts.push_back(record.brightness_stats.local_contrast);
-        radii.push_back(rough_radius(record));
+        radii.push_back(record_radius(record));
     }
     mean_center *= 1.0 / static_cast<double>(track.size());
 
     for (const auto& record : track) {
-        centers.push_back(cv::norm(rough_center(record) - mean_center));
+        centers.push_back(cv::norm(record_center(record) - mean_center));
     }
 
     const double contrast_mean = mean_value(contrasts);

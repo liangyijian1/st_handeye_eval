@@ -226,7 +226,6 @@ bool super_edge_detector::detect_edges()
 
             std::vector<AsymmetricGaussianResult> allResults(nd);
             std::vector<ceres::Solver::Summary> allSummaries(nd);
-            std::vector<float> right_fit_scores;
 
             for (int j = 0; j < nd; ++j)
             {
@@ -391,14 +390,16 @@ bool super_edge_detector::detect_edges()
                 }
 
                 cv::Mat overlayImage = displayImage;
-                draw_subpixel_edges(overlayImage, edgePoints, rayIndices, samplePoints2D, 1, DrawMode::DRAW_PROFILES | DrawMode::DRAW_CENTERS);
+                const DrawMode overlayMode = confidence_passed
+                    ? (DrawMode::DRAW_PROFILES | DrawMode::DRAW_CENTERS)
+                    : DrawMode::DRAW_CENTERS;
+                draw_subpixel_edges(overlayImage, edgePoints, rayIndices, samplePoints2D, 1, overlayMode);
                 cv::Mat diffMask;
                 cv::absdiff(overlayImage, displayImage, diffMask);
                 cv::Mat diffGray;
                 cv::cvtColor(diffMask, diffGray, cv::COLOR_BGR2GRAY);
                 cv::Mat changedMask;
                 cv::threshold(diffGray, changedMask, 0, 255, cv::THRESH_BINARY);
-                const cv::Scalar contourColor = confidence_passed ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255);
                 overlayImage.copyTo(displayImage, changedMask);
                 if (!confidence_passed && edgePoints.size() >= 5) {
                     std::vector<cv::Point> scaled_points;
@@ -407,7 +408,7 @@ bool super_edge_detector::detect_edges()
                         scaled_points.emplace_back(cvRound(pt.x), cvRound(pt.y));
                     }
                     cv::RotatedRect ellipse = cv::fitEllipse(scaled_points);
-                    cv::ellipse(displayImage, ellipse, contourColor, 1, cv::LINE_AA);
+                    cv::ellipse(displayImage, ellipse, cv::Scalar(0, 0, 255), 1, cv::LINE_AA);
                     cv::circle(displayImage, ellipse.center, 2, cv::Scalar(255, 0, 0), -1, cv::LINE_AA);
                 }
             }
@@ -716,8 +717,6 @@ void super_edge_detector::plot_fitting_curve(
 
     cv::line(plot, cv::Point(margin, height - margin), cv::Point(width - margin, height - margin), cv::Scalar(0, 0, 0), 2); // X轴
     cv::line(plot, cv::Point(margin, height - margin), cv::Point(margin, margin), cv::Scalar(0, 0, 0), 2); // Y轴
-    auto final_cost = summary.final_cost;
-
     std::string cost_str = std::to_string(summary.final_cost);
     if (cost_str.length() > 6) cost_str = cost_str.substr(0, 6);
     std::string s1_str = std::to_string(sigma1);

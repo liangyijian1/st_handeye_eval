@@ -72,6 +72,13 @@ add_executable(st_handeye_eval
     stability_analysis.h
 )
 
+add_executable(stability_analysis_tests
+    stability_analysis_tests.cpp
+    stability_analysis.cpp
+    stability_analysis.h
+    super_edge_detector.h
+)
+
 if(TARGET opencv_world)
     set(ST_HANDEYE_OPENCV_TARGET opencv_world)
 else()
@@ -83,6 +90,11 @@ target_link_libraries(st_handeye_eval PRIVATE
     Ceres::ceres
 )
 
+target_link_libraries(stability_analysis_tests PRIVATE
+    ${ST_HANDEYE_OPENCV_TARGET}
+    Ceres::ceres
+)
+
 target_compile_definitions(st_handeye_eval PRIVATE
     NOMINMAX
     WIN32_LEAN_AND_MEAN
@@ -90,7 +102,9 @@ target_compile_definitions(st_handeye_eval PRIVATE
 
 if(MSVC)
     target_compile_options(st_handeye_eval PRIVATE /utf-8 /W3)
+    target_compile_options(stability_analysis_tests PRIVATE /utf-8 /W3)
     target_link_options(st_handeye_eval PRIVATE $<$<CONFIG:RelWithDebInfo>:/INCREMENTAL:NO>)
+    target_link_options(stability_analysis_tests PRIVATE $<$<CONFIG:RelWithDebInfo>:/INCREMENTAL:NO>)
 endif()
 
 set(OPENCV_RUNTIME_DIR "D:/3rdParty/opencv-4.13.0/build/install/x64/vc18/bin")
