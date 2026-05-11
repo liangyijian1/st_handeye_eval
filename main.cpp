@@ -16,8 +16,9 @@ int main(int argc, char** argv)
     config.circle_radius_max = 15.0f;
     config.edge_polarity = 2; // bright-to-dark edges
 
-    config.save_plots = 0;
-    config.save_crops = 0;
+    config.save_plots = 1;
+    config.save_crops = 1;
+    config.confidence_threshold = 0.8;
 
     config.ceres_cost_th = 3000;
     config.ceres_sigma_th = 2.0;

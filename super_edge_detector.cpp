@@ -331,7 +331,7 @@ bool super_edge_detector::detect_edges()
                 float cost_avg = cost_sum / valid_points;
                 double S_cost = elegant_score(cost_avg, config.ceres_cost_th, 6.0);
 
-                const int K = 6;
+                const int K = 5;
                 std::vector<int> sector_hit(K, 0);
                 for (int j : rayIndices) {
                     double angle = 2.0 * CV_PI * j / nd;
@@ -341,15 +341,16 @@ bool super_edge_detector::detect_edges()
                 int occupied = std::accumulate(sector_hit.begin(), sector_hit.end(), 0);
                 double S_angular = static_cast<double>(occupied) / K;
 
-                confidence = config.summary_weights.coverage_weight * S_cover + 
-                             config.summary_weights.sharpness_weight * S_sharpness + 
-                             config.summary_weights.cost_weight * S_cost + 
+                confidence = config.summary_weights.coverage_weight * S_cover +
+                             config.summary_weights.sharpness_weight * S_sharpness +
+                             config.summary_weights.cost_weight * S_cost +
                              config.summary_weights.angular_distribution_weight * S_angular;
-                
+                const bool confidence_passed = confidence >= config.confidence_threshold;
 
                 summary_file << "The " << i << " circle (Center X: " << cx_f << ", Y: " << cy_f << ")\n"
                              << "   Sub-pixel edge points generated: " << valid_points << "/" << nd << "\n"
                              << "   Average coordinate correction: " << std::fixed << std::setprecision(4) << avg_shift << " px\n"
+                             << "   confidence_passed: " << (confidence_passed ? "true" : "false") << "\n"
                              << "   Confidence details after weighting:\n"
                              << "    - Coverage: " << std::fixed << std::setprecision(4) << config.summary_weights.coverage_weight * S_cover << "\n"
                              << "    - Sharpness: " << std::fixed << std::setprecision(4) << config.summary_weights.sharpness_weight * S_sharpness << "\n"
@@ -389,7 +390,26 @@ bool super_edge_detector::detect_edges()
                     }
                 }
 
-                draw_subpixel_edges(displayImage, edgePoints, rayIndices, samplePoints2D, 1, DrawMode::DRAW_PROFILES | DrawMode::DRAW_CENTERS);
+                cv::Mat overlayImage = displayImage;
+                draw_subpixel_edges(overlayImage, edgePoints, rayIndices, samplePoints2D, 1, DrawMode::DRAW_PROFILES | DrawMode::DRAW_CENTERS);
+                cv::Mat diffMask;
+                cv::absdiff(overlayImage, displayImage, diffMask);
+                cv::Mat diffGray;
+                cv::cvtColor(diffMask, diffGray, cv::COLOR_BGR2GRAY);
+                cv::Mat changedMask;
+                cv::threshold(diffGray, changedMask, 0, 255, cv::THRESH_BINARY);
+                const cv::Scalar contourColor = confidence_passed ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255);
+                overlayImage.copyTo(displayImage, changedMask);
+                if (!confidence_passed && edgePoints.size() >= 5) {
+                    std::vector<cv::Point> scaled_points;
+                    scaled_points.reserve(edgePoints.size());
+                    for (const auto& pt : edgePoints) {
+                        scaled_points.emplace_back(cvRound(pt.x), cvRound(pt.y));
+                    }
+                    cv::RotatedRect ellipse = cv::fitEllipse(scaled_points);
+                    cv::ellipse(displayImage, ellipse, contourColor, 1, cv::LINE_AA);
+                    cv::circle(displayImage, ellipse.center, 2, cv::Scalar(255, 0, 0), -1, cv::LINE_AA);
+                }
             }
         }
 
@@ -514,7 +534,6 @@ bool super_edge_detector::cal_profile_gradient(const std::vector<RadialProfileSa
     if (profile.size() < 5) return false;
 
     const double h = config.radial_step;
-    // 5点求导权重系数：(-1, 8, 0, -8, 1) / (12 * h)
     const double inv_denominator = 1.0 / (12.0 * h);
 
     const size_t n = profile.size();
@@ -743,4 +762,3 @@ void super_edge_detector::plot_fitting_curve(
 
     cv::imwrite(save_path, plot);
 }
-

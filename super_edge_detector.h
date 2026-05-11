@@ -32,6 +32,54 @@ struct SummaryWeights
     double angular_distribution_weight = 0.15;
 };
 
+struct LocalBrightnessStats
+{
+    double inner_mean = 0.0;
+    double ring_mean = 0.0;
+    double outer_mean = 0.0;
+    double local_contrast = 0.0;
+};
+
+struct RadialRayResult
+{
+    int ray_index = -1;
+    cv::Point2d direction;
+    bool optimization_succeeded = false;
+    cv::Point2d edge_point;
+    double mu = 0.0;
+    double sigma1 = 0.0;
+    double sigma2 = 0.0;
+    double final_cost = 0.0;
+};
+
+struct CircleDetectionRecord
+{
+    cv::Vec3f rough_circle;
+    std::vector<RadialRayResult> rays;
+    std::vector<cv::Point2d> optimized_edge_points;
+    bool fine_localized = false;
+    int valid_ray_count = 0;
+    double avg_shift = 0.0;
+    double coverage_score = 0.0;
+    double sharpness_score = 0.0;
+    double cost_score = 0.0;
+    double angular_score = 0.0;
+    double confidence = 0.0;
+    bool confidence_passed = false;
+    cv::RotatedRect optimized_contour;
+    bool has_optimized_contour = false;
+    LocalBrightnessStats brightness_stats;
+};
+
+struct ImageDetectionSummary
+{
+    std::string image_name;
+    int rough_circle_count = 0;
+    int fine_localized_circle_count = 0;
+    int confidence_passed_circle_count = 0;
+    std::vector<CircleDetectionRecord> records;
+};
+
 struct detector_config
 {
     // edge detection parameters
@@ -43,6 +91,7 @@ struct detector_config
     bool save_plots = false;
     bool save_crops = false;
     SummaryWeights summary_weights;
+    double confidence_threshold = 0.8;
     // circle detection parameters
     int circle_detection_method = CIRCLE_DETECT_EDGE_DRAWING;
     float circle_radius_min = 4.0f;
@@ -147,4 +196,3 @@ private:
     std::string root_path_;
     detector_config config;
 };
-
