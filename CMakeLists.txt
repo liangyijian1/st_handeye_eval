@@ -67,6 +67,8 @@ add_executable(st_handeye_eval
     packalgo_circle_grid_detector.h
     super_edge_detector.cpp
     super_edge_detector.h
+    stability_analysis.cpp
+    stability_analysis.h
 )
 
 
