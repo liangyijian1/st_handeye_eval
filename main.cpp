@@ -18,13 +18,13 @@ int main(int argc, char** argv)
 
     config.save_plots = 0;
     config.save_crops = 0;
-    config.confidence_threshold = 0.8;
+    config.confidence_threshold = 0.78;
 
     config.ceres_cost_th = 3000;
     config.ceres_sigma_th = 2.0;
 
 
-    super_edge_detector edge_detector("C:/Users/yjliang/Downloads/st_handeye_eval/st_handeye_eval/images", config);
+    super_edge_detector edge_detector("C:/Users/yjliang/source/repos/st_handeye_eval/images", config);
     edge_detector.detect_edges();
 
     std::cout << "\nProcessing complete!" << std::endl;

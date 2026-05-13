@@ -27,8 +27,8 @@ enum CircleDetectionMethod
 struct SummaryWeights
 {
     double coverage_weight = 0.1;
-    double sharpness_weight = 0.4;
-    double cost_weight = 0.35;
+    double sharpness_weight = 0.5;
+    double cost_weight = 0.25;
     double angular_distribution_weight = 0.15;
 };
 
